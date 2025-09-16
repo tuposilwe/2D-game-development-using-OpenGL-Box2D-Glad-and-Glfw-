@@ -1,5 +1,5 @@
 // main.cpp
-// Box2D + OpenGL Game with one dynamic box, AABB collision, and EBO
+// Box2D + OpenGL Game with 1-meter proximity AABB collision and EBO
 
 #include <iostream>
 #include <cmath>
@@ -105,9 +105,14 @@ GLuint create_square_vao_ebo() {
 // ---------------- AABB ----------------
 struct AABB { float minX, minY, maxX, maxY; };
 
-AABB getAABB(b2BodyId body, float halfW, float halfH) {
+AABB getAABBWithProximity(b2BodyId body, float halfW, float halfH, float proximity) {
     b2Vec2 pos = b2Body_GetPosition(body);
-    return { pos.x - halfW,pos.y - halfH,pos.x + halfW,pos.y + halfH };
+    return {
+        pos.x - halfW - proximity,
+        pos.y - halfH - proximity,
+        pos.x + halfW + proximity,
+        pos.y + halfH + proximity
+    };
 }
 
 bool aabbOverlap(const AABB& a, const AABB& b) {
@@ -137,7 +142,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D One Box EBO", nullptr, nullptr);
+    GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D Proximity Collision", nullptr, nullptr);
     if (!win) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(win);
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) return -1;
@@ -196,10 +201,10 @@ int main() {
         process_input(win, player);
         b2World_Step(g_world, timeStep, 8);
 
-        // --- AABB collision ---
-        AABB playerBox = getAABB(player, 1.0f, 1.0f);
+        // --- 1-meter proximity AABB ---
+        AABB playerBox = getAABBWithProximity(player, 1.0f, 1.0f, 0.0f); // 1 meter
         *(boxUD->color) = g_boxColor; // reset
-        AABB boxAABB = getAABB(box, 0.5f, 0.5f);
+        AABB boxAABB = getAABBWithProximity(box, 0.5f, 0.5f, 0.0f); // box normal size
         if (aabbOverlap(playerBox, boxAABB)) *(boxUD->color) = g_yellowColor;
 
         // Auto reset if player falls
