@@ -1,5 +1,5 @@
 // main.cpp
-// Simple Box2D + OpenGL Game with one dynamic box and reliable AABB collision color
+// Box2D + OpenGL Game with one dynamic box, AABB collision, and EBO
 
 #include <iostream>
 #include <cmath>
@@ -24,11 +24,7 @@ GLuint g_prog;
 GLint g_uMVP;
 GLint g_uColor;
 
-enum EntityType {
-    ENTITY_NONE,
-    ENTITY_PLAYER,
-    ENTITY_BOX
-};
+enum EntityType { ENTITY_NONE, ENTITY_PLAYER, ENTITY_BOX };
 
 struct UserData {
     EntityType type;
@@ -55,7 +51,7 @@ const char* fragment_shader_src = R"(
 out vec4 FragColor;
 uniform vec3 uColor;
 void main() {
-    FragColor = vec4(uColor, 1.0);
+    FragColor = vec4(uColor,1.0);
 }
 )";
 
@@ -66,79 +62,67 @@ GLuint compile_shader(const char* src, GLenum type) {
     glCompileShader(s);
     GLint ok;
     glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        char log[512];
-        glGetShaderInfoLog(s, 512, nullptr, log);
-        std::cerr << "Shader compile error: " << log << "\n";
-        exit(1);
-    }
+    if (!ok) { char log[512]; glGetShaderInfoLog(s, 512, nullptr, log); std::cerr << "Shader compile error: " << log << "\n"; exit(1); }
     return s;
 }
 
 GLuint link_program(GLuint vs, GLuint fs) {
     GLuint p = glCreateProgram();
-    glAttachShader(p, vs);
-    glAttachShader(p, fs);
-    glLinkProgram(p);
-    GLint ok;
-    glGetProgramiv(p, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        char log[512];
-        glGetProgramInfoLog(p, 512, nullptr, log);
-        std::cerr << "Program link error: " << log << "\n";
-        exit(1);
-    }
+    glAttachShader(p, vs); glAttachShader(p, fs); glLinkProgram(p);
+    GLint ok; glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) { char log[512]; glGetProgramInfoLog(p, 512, nullptr, log); std::cerr << "Program link error: " << log << "\n"; exit(1); }
     return p;
 }
 
-GLuint create_square_vao() {
+// ---------------- VBO + EBO Setup ----------------
+GLuint create_square_vao_ebo() {
     float vertices[] = {
-        -0.5f, -0.5f,
-         0.5f, -0.5f,
-         0.5f,  0.5f,
-        -0.5f, -0.5f,
-         0.5f,  0.5f,
-        -0.5f,  0.5f
+        -0.5f,-0.5f, // 0
+         0.5f,-0.5f, // 1
+         0.5f, 0.5f, // 2
+        -0.5f, 0.5f  // 3
     };
-    GLuint vao, vbo;
+    unsigned int indices[] = { 0,1,2, 0,2,3 };
+
+    GLuint vao, vbo, ebo;
     glGenVertexArrays(1, &vao);
     glGenBuffers(1, &vbo);
+    glGenBuffers(1, &ebo);
+
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+
     glBindVertexArray(0);
     return vao;
 }
 
 // ---------------- AABB ----------------
-struct AABB {
-    float minX, minY, maxX, maxY;
-};
+struct AABB { float minX, minY, maxX, maxY; };
 
 AABB getAABB(b2BodyId body, float halfW, float halfH) {
     b2Vec2 pos = b2Body_GetPosition(body);
-    return { pos.x - halfW, pos.y - halfH, pos.x + halfW, pos.y + halfH };
+    return { pos.x - halfW,pos.y - halfH,pos.x + halfW,pos.y + halfH };
 }
 
 bool aabbOverlap(const AABB& a, const AABB& b) {
-    return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+    return !(a.maxX<b.minX || a.minX>b.maxX || a.maxY<b.minY || a.minY>b.maxY);
 }
 
 // ---------------- Input ----------------
 void process_input(GLFWwindow* win, b2BodyId player) {
     float moveForce = 20.0f;
     float jumpImpulse = 6.0f;
-
-    if (glfwGetKey(win, GLFW_KEY_LEFT) == GLFW_PRESS)
-        b2Body_ApplyForceToCenter(player, { -moveForce,0.0f }, true);
-    if (glfwGetKey(win, GLFW_KEY_RIGHT) == GLFW_PRESS)
-        b2Body_ApplyForceToCenter(player, { moveForce,0.0f }, true);
+    if (glfwGetKey(win, GLFW_KEY_LEFT) == GLFW_PRESS) b2Body_ApplyForceToCenter(player, { -moveForce,0.0f }, true);
+    if (glfwGetKey(win, GLFW_KEY_RIGHT) == GLFW_PRESS) b2Body_ApplyForceToCenter(player, { moveForce,0.0f }, true);
     if (glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS) {
         b2Vec2 vel = b2Body_GetLinearVelocity(player);
-        if (fabs(vel.y) < 0.01f)
-            b2Body_ApplyLinearImpulseToCenter(player, { 0.0f,jumpImpulse }, true);
+        if (fabs(vel.y) < 0.01f) b2Body_ApplyLinearImpulseToCenter(player, { 0.0f,jumpImpulse }, true);
     }
     if (glfwGetKey(win, GLFW_KEY_R) == GLFW_PRESS) {
         b2Body_SetTransform(player, { 0.0f,10.0f }, b2MakeRot(0.0f));
@@ -153,7 +137,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D One Box", nullptr, nullptr);
+    GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D One Box EBO", nullptr, nullptr);
     if (!win) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(win);
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) return -1;
@@ -163,11 +147,12 @@ int main() {
     GLuint fs = compile_shader(fragment_shader_src, GL_FRAGMENT_SHADER);
     g_prog = link_program(vs, fs);
     glDeleteShader(vs); glDeleteShader(fs);
-    g_vao = create_square_vao();
+
+    g_vao = create_square_vao_ebo();
     g_uMVP = glGetUniformLocation(g_prog, "uMVP");
     g_uColor = glGetUniformLocation(g_prog, "uColor");
 
-    // --------- Box2D world ---------
+    // Box2D world
     b2WorldDef worldDef = b2DefaultWorldDef();
     worldDef.gravity = { 0.0f,-10.0f };
     g_world = b2CreateWorld(&worldDef);
@@ -215,8 +200,7 @@ int main() {
         AABB playerBox = getAABB(player, 1.0f, 1.0f);
         *(boxUD->color) = g_boxColor; // reset
         AABB boxAABB = getAABB(box, 0.5f, 0.5f);
-        if (aabbOverlap(playerBox, boxAABB))
-            *(boxUD->color) = g_yellowColor;
+        if (aabbOverlap(playerBox, boxAABB)) *(boxUD->color) = g_yellowColor;
 
         // Auto reset if player falls
         b2Vec2 ppos = b2Body_GetPosition(player);
@@ -230,23 +214,21 @@ int main() {
         glUseProgram(g_prog);
         glBindVertexArray(g_vao);
 
-        auto drawBody = [&](b2BodyId body, float w_m, float h_m) {
-            b2Vec2 pos = b2Body_GetPosition(body);
-            float angle = b2Rot_GetAngle(b2Body_GetRotation(body));
+        auto drawBody = [&](b2BodyId b, float w, float h) {
+            b2Vec2 pos = b2Body_GetPosition(b);
+            float angle = b2Rot_GetAngle(b2Body_GetRotation(b));
             float px = pos.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f;
             float py = pos.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f;
-            float w = w_m * PIXELS_PER_METER * 2.0f;
-            float h = h_m * PIXELS_PER_METER * 2.0f;
             glm::mat4 model(1.0f);
             model = glm::translate(model, { px,py,0.0f });
             model = glm::rotate(model, angle, { 0,0,1 });
-            model = glm::scale(model, { w,h,1.0f });
+            model = glm::scale(model, { w * PIXELS_PER_METER * 2.0f,h * PIXELS_PER_METER * 2.0f,1.0f });
             glm::mat4 mvp = proj * model;
             glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
-            UserData* ud = (UserData*)b2Body_GetUserData(body);
-            glm::vec3 color = ud ? *(ud->color) : glm::vec3(1.0f, 1.0f, 1.0f);
+            UserData* ud = (UserData*)b2Body_GetUserData(b);
+            glm::vec3 color = ud ? *(ud->color) : glm::vec3(1.0f);
             glUniform3f(g_uColor, color.r, color.g, color.b);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
             };
 
         drawBody(ground, 50.0f, 0.1f);
