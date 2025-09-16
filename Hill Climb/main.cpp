@@ -18,13 +18,28 @@ const int WINDOW_WIDTH = 800;
 const int WINDOW_HEIGHT = 600;
 const float PIXELS_PER_METER = 50.0f; // scale Box2D meters -> pixels
 
-// Globals to be used in callback
+// Globals
 b2WorldId g_world;
-std::vector<b2BodyId> g_boxes;
 GLuint g_vao;
 GLuint g_prog;
 GLint g_uMVP;
 GLint g_uColor;
+
+enum EntityType {
+    ENTITY_NONE,
+    ENTITY_PLAYER,
+    ENTITY_NEW_BOX
+};
+
+struct UserData {
+    EntityType type;
+    glm::vec3* color;
+};
+
+// Global color variables
+glm::vec3 g_playerColor(0.9f, 0.3f, 0.25f);
+glm::vec3 g_boxColor(0.2f, 0.5f, 0.8f);
+glm::vec3 g_yellowColor(1.0f, 1.0f, 0.0f);
 
 // ---------------- Shaders ----------------
 const char* vertex_shader_src = R"(
@@ -99,35 +114,6 @@ GLuint create_square_vao() {
 }
 
 // ---------------- Input ----------------
-void create_box_at_mouse(double xpos, double ypos) {
-    // Convert screen coordinates to Box2D world coordinates
-    float worldX = (static_cast<float>(xpos) - WINDOW_WIDTH / 2.0f) / PIXELS_PER_METER;
-    float worldY = (static_cast<float>(ypos) - WINDOW_HEIGHT / 2.0f) / PIXELS_PER_METER;
-    // Invert Y-axis since screen coordinates start from top
-    worldY *= -1.0f;
-
-    b2BodyDef boxDef = b2DefaultBodyDef();
-    boxDef.type = b2_dynamicBody;
-    boxDef.position = { worldX, worldY };
-    b2BodyId newBox = b2CreateBody(g_world, &boxDef);
-
-    b2Polygon dynBox = b2MakeBox(0.5f, 0.5f); // 1x1 meter box
-    b2ShapeDef boxSD = b2DefaultShapeDef();
-    boxSD.density = 1.0f;
-    boxSD.material.friction = 0.3f;
-    b2CreatePolygonShape(newBox, &boxSD, &dynBox);
-
-    g_boxes.push_back(newBox);
-}
-
-void mouse_button_callback(GLFWwindow* win, int button, int action, int mods) {
-    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
-        double xpos, ypos;
-        glfwGetCursorPos(win, &xpos, &ypos);
-        create_box_at_mouse(xpos, ypos);
-    }
-}
-
 void process_input(GLFWwindow* win, b2BodyId player) {
     float moveForce = 20.0f;
     float jumpImpulse = 6.0f;
@@ -139,14 +125,12 @@ void process_input(GLFWwindow* win, b2BodyId player) {
         b2Body_ApplyForceToCenter(player, { moveForce, 0.0f }, true);
     }
     if (glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS) {
-        // Only jump if nearly on the ground
         b2Vec2 vel = b2Body_GetLinearVelocity(player);
         if (fabs(vel.y) < 0.01f) {
             b2Body_ApplyLinearImpulseToCenter(player, { 0.0f, jumpImpulse }, true);
         }
     }
     if (glfwGetKey(win, GLFW_KEY_R) == GLFW_PRESS) {
-        // Manual reset
         b2Body_SetTransform(player, { 0.0f, 10.0f }, b2MakeRot(0.0f));
         b2Body_SetLinearVelocity(player, { 0.0f, 0.0f });
     }
@@ -186,25 +170,21 @@ int main() {
     g_uMVP = glGetUniformLocation(g_prog, "uMVP");
     g_uColor = glGetUniformLocation(g_prog, "uColor");
 
-    // Set mouse button callback
-    glfwSetMouseButtonCallback(win, mouse_button_callback);
-
     // --------- Box2D world setup ---------
     b2WorldDef worldDef = b2DefaultWorldDef();
     worldDef.gravity = { 0.0f, -10.0f };
+    worldDef.enableContactSoftening = true;
     g_world = b2CreateWorld(&worldDef);
+
+
 
     // Ground
     b2BodyDef groundDef = b2DefaultBodyDef();
     groundDef.type = b2_staticBody;
-
-    float groundHeight = 0.1f; // half-height in meters (so total height = 1m)
+    float groundHeight = 0.1f;
     groundDef.position = { 0.0f, -5.0f };
     b2BodyId ground = b2CreateBody(g_world, &groundDef);
-
-   
-    // Shape: make it wide but thin
-    b2Polygon groundShape = b2MakeBox(50.0f, groundHeight); // 100m wide, 1m tall
+    b2Polygon groundShape = b2MakeBox(50.0f, groundHeight);
     b2ShapeDef groundSD = b2DefaultShapeDef();
     b2CreatePolygonShape(ground, &groundSD, &groundShape);
 
@@ -213,19 +193,35 @@ int main() {
     playerBoxDef.type = b2_dynamicBody;
     playerBoxDef.position = { 0.0f, 10.0f };
     b2BodyId player = b2CreateBody(g_world, &playerBoxDef);
-    b2Polygon playerBoxShape = b2MakeBox(1.0f, 1.0f); // 2x2 meters
+
+    UserData* playerUserData = new UserData{ ENTITY_PLAYER, &g_playerColor };
+    b2Body_SetUserData(player, playerUserData);
+
+    b2Polygon playerBoxShape = b2MakeBox(1.0f, 1.0f);
     b2ShapeDef playerBoxSD = b2DefaultShapeDef();
     playerBoxSD.density = 1.0f;
     playerBoxSD.material.friction = 0.3f;
     b2CreatePolygonShape(player, &playerBoxSD, &playerBoxShape);
 
-    float timeStep = 1.0f / 60.0f;
+    // New box
+    b2BodyDef boxDef = b2DefaultBodyDef();
+    boxDef.type = b2_dynamicBody;
+    boxDef.position = { 2.0f, 6.0f };
+    b2BodyId newBox = b2CreateBody(g_world, &boxDef);
 
-    // Projection: pixels to NDC
+    UserData* newBoxUserData = new UserData{ ENTITY_NEW_BOX, &g_boxColor };
+    b2Body_SetUserData(newBox, newBoxUserData);
+
+    b2Polygon dynBox = b2MakeBox(0.5f, 0.5f);
+    b2ShapeDef boxSD = b2DefaultShapeDef();
+    boxSD.density = 1.0f;
+    boxSD.material.friction = 0.3f;
+    b2CreatePolygonShape(newBox, &boxSD, &dynBox);
+
+    float timeStep = 1.0f / 60.0f;
     glm::mat4 proj = glm::ortho(0.0f, float(WINDOW_WIDTH),
         0.0f, float(WINDOW_HEIGHT),
         -1.0f, 1.0f);
-
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
 
     while (!glfwWindowShouldClose(win)) {
@@ -234,6 +230,46 @@ int main() {
 
         // Physics step
         b2World_Step(g_world, timeStep, 8);
+
+        // --- Process collision events ---
+        const b2ContactEvents events = b2World_GetContactEvents(g_world);
+        std::cout << "Begin contacts: " << events.beginCount << "\n";
+
+        // Reset box color to default at the start of each frame
+        *(newBoxUserData->color) = g_boxColor;
+
+        // Check for begin events
+        for (int i = 0; i < events.beginCount; ++i) {
+            const b2ContactBeginTouchEvent* contactEvent = &events.beginEvents[i];
+            b2BodyId bodyA = b2Shape_GetBody(contactEvent->shapeIdA);
+            b2BodyId bodyB = b2Shape_GetBody(contactEvent->shapeIdB);
+            UserData* udA = (UserData*)b2Body_GetUserData(bodyA);
+            UserData* udB = (UserData*)b2Body_GetUserData(bodyB);
+
+            if (!udA || !udB) continue;
+
+            if ((udA->type == ENTITY_PLAYER && udB->type == ENTITY_NEW_BOX) ||
+                (udA->type == ENTITY_NEW_BOX && udB->type == ENTITY_PLAYER)) {
+                *(newBoxUserData->color) = g_yellowColor;
+                std::cout << "Collision detected! Changing newBox color to yellow.\n";
+            }
+        }
+
+        // Check for ongoing contacts
+        for (int i = 0; i < events.endCount; ++i) {
+            const b2ContactEndTouchEvent* contactEvent = &events.endEvents[i];
+            b2BodyId bodyA = b2Shape_GetBody(contactEvent->shapeIdA);
+            b2BodyId bodyB = b2Shape_GetBody(contactEvent->shapeIdB);
+            UserData* udA = (UserData*)b2Body_GetUserData(bodyA);
+            UserData* udB = (UserData*)b2Body_GetUserData(bodyB);
+
+            if (!udA || !udB) continue;
+
+            if ((udA->type == ENTITY_PLAYER && udB->type == ENTITY_NEW_BOX) ||
+                (udA->type == ENTITY_NEW_BOX && udB->type == ENTITY_PLAYER)) {
+                *(newBoxUserData->color) = g_yellowColor;
+            }
+        }
 
         // Auto reset if player falls below screen
         b2Vec2 ppos = b2Body_GetPosition(player);
@@ -247,73 +283,39 @@ int main() {
         glUseProgram(g_prog);
         glBindVertexArray(g_vao);
 
-        // --- Draw ground ---
-        {
-            b2Vec2 pos = b2Body_GetPosition(ground);
-            b2Rot rot = b2Body_GetRotation(ground);
-            float angle = b2Rot_GetAngle(rot);
+        auto drawBody = [&](b2BodyId body, float w_m, float h_m) {
+            b2Vec2 pos = b2Body_GetPosition(body);
+            float angle = b2Rot_GetAngle(b2Body_GetRotation(body));
             float px = pos.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f;
             float py = pos.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f;
-            float w = 100.0f * PIXELS_PER_METER;
-            float h = 2.0f * groundHeight * PIXELS_PER_METER; // make height match
+            float w = w_m * PIXELS_PER_METER * 2.0f;
+            float h = h_m * PIXELS_PER_METER * 2.0f;
 
             glm::mat4 model(1.0f);
             model = glm::translate(model, glm::vec3(px, py, 0.0f));
             model = glm::rotate(model, angle, glm::vec3(0, 0, 1));
             model = glm::scale(model, glm::vec3(w, h, 1.0f));
-
             glm::mat4 mvp = proj * model;
             glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(g_uColor, 0.2f, 0.8f, 0.2f);
+
+            UserData* ud = (UserData*)b2Body_GetUserData(body);
+            glm::vec3 color = ud ? *(ud->color) : glm::vec3(1.0f, 1.0f, 1.0f);
+            glUniform3f(g_uColor, color.r, color.g, color.b);
+
             glDrawArrays(GL_TRIANGLES, 0, 6);
-        }
+            };
 
-        // --- Draw player box ---
-        {
-            b2Vec2 pos = b2Body_GetPosition(player);
-            b2Rot rot = b2Body_GetRotation(player);
-            float angle = b2Rot_GetAngle(rot);
-            float px = pos.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f;
-            float py = pos.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f;
-            float w = 2.0f * PIXELS_PER_METER;
-            float h = 2.0f * PIXELS_PER_METER;
-
-            glm::mat4 model(1.0f);
-            model = glm::translate(model, glm::vec3(px, py, 0.0f));
-            model = glm::rotate(model, angle, glm::vec3(0, 0, 1));
-            model = glm::scale(model, glm::vec3(w, h, 1.0f));
-
-            glm::mat4 mvp = proj * model;
-            glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(g_uColor, 0.9f, 0.3f, 0.25f);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
-        }
-
-        // --- Draw all created boxes ---
-        for (b2BodyId box : g_boxes) {
-            b2Vec2 pos = b2Body_GetPosition(box);
-            b2Rot rot = b2Body_GetRotation(box);
-            float angle = b2Rot_GetAngle(rot);
-            float px = pos.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f;
-            float py = pos.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f;
-            float w = 1.0f * PIXELS_PER_METER;
-            float h = 1.0f * PIXELS_PER_METER;
-
-            glm::mat4 model(1.0f);
-            model = glm::translate(model, glm::vec3(px, py, 0.0f));
-            model = glm::rotate(model, angle, glm::vec3(0, 0, 1));
-            model = glm::scale(model, glm::vec3(w, h, 1.0f));
-
-            glm::mat4 mvp = proj * model;
-            glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
-            glUniform3f(g_uColor, 0.2f, 0.5f, 0.8f);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
-        }
-
+        drawBody(ground, 50.0f, groundHeight);
+        drawBody(player, 1.0f, 1.0f);
+        drawBody(newBox, 0.5f, 0.5f);
 
         glfwSwapBuffers(win);
         glfwPollEvents();
     }
+
+    // cleanup
+    delete (UserData*)b2Body_GetUserData(player);
+    delete (UserData*)b2Body_GetUserData(newBox);
 
     b2DestroyWorld(g_world);
     glfwTerminate();
