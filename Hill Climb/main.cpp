@@ -4,6 +4,7 @@
 #include <iostream>
 #include <cmath>
 #include <vector>
+#include <cstdlib> // For rand()
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -37,7 +38,7 @@ struct UserData {
     glm::vec3* color;
     GLuint textureID;
     bool useTexture;
- 
+
     float animationTime;  // Track animation time for pulsing effect
     bool isAnimating;     // Track if animation is active
     float animationScale;
@@ -48,6 +49,27 @@ glm::vec3 g_playerColor(0.9f, 0.3f, 0.25f);
 glm::vec3 g_boxColor(0.2f, 0.5f, 0.8f);
 glm::vec3 g_yellowColor(1.0f, 1.0f, 0.0f);
 glm::vec3 g_groundColor(0.4f, 0.6f, 0.3f);
+
+// ---------------- Particle System ----------------
+struct Particle {
+    glm::vec2 position;
+    glm::vec2 velocity;
+    float life;
+    float size;
+    float rotation;
+    float rotationSpeed;
+};
+
+const int MAX_PARTICLES = 100;
+std::vector<Particle> particles;
+GLuint g_particleTexture;
+float g_particleSize = 0.2f; // Size in meters
+
+// Function declarations
+void init_particle_system();
+void spawn_explosion(const glm::vec2& position);
+void update_particles(float deltaTime);
+void render_particles(const glm::mat4& proj);
 
 // ---------------- Shaders ----------------
 const char* vertex_shader_src = R"(
@@ -235,6 +257,19 @@ void process_input(GLFWwindow* win, b2BodyId player) {
         b2Body_SetTransform(player, { 0.0f,10.0f }, b2MakeRot(0.0f));
         b2Body_SetLinearVelocity(player, { 0.0f,0.0f });
     }
+
+    // Particle explosion on X key
+    static bool xKeyPressed = false;
+    if (glfwGetKey(win, GLFW_KEY_X) == GLFW_PRESS) {
+        if (!xKeyPressed) {
+            b2Vec2 pos = b2Body_GetPosition(player);
+            spawn_explosion(glm::vec2(pos.x, pos.y));
+            xKeyPressed = true;
+        }
+    }
+    else {
+        xKeyPressed = false;
+    }
 }
 
 // ---------------- Animation Functions ----------------
@@ -253,6 +288,135 @@ void update_box_animation(UserData* boxUD, float deltaTime, bool isPlayerNear) {
         boxUD->isAnimating = false;
         boxUD->animationTime = 0.0f;
         boxUD->animationScale = 1.0f;
+    }
+}
+
+// ---------------- Particle System Functions ----------------
+void init_particle_system() {
+    particles.reserve(MAX_PARTICLES);
+
+    // Load the particle texture
+    g_particleTexture = load_texture("explosion.png");
+
+    // If loading fails, create a simple fallback texture
+    if (g_particleTexture == 0) {
+        std::cout << "Failed to load particle.png, creating fallback texture" << std::endl;
+
+        const int TEX_SIZE = 64;
+        std::vector<unsigned char> textureData(TEX_SIZE * TEX_SIZE * 4);
+
+        float center = TEX_SIZE / 2.0f;
+        float radius = TEX_SIZE / 2.0f;
+
+        for (int y = 0; y < TEX_SIZE; ++y) {
+            for (int x = 0; x < TEX_SIZE; ++x) {
+                int idx = (y * TEX_SIZE + x) * 4;
+                float dist = sqrt((x - center) * (x - center) + (y - center) * (y - center));
+
+                if (dist < radius) {
+                    // Create a circular gradient with transparency
+                    float alpha = 1.0f - (dist / radius);
+                    textureData[idx] = 255;     // R
+                    textureData[idx + 1] = 200; // G
+                    textureData[idx + 2] = 100; // B
+                    textureData[idx + 3] = static_cast<unsigned char>(alpha * 255); // A
+                }
+                else {
+                    // Transparent outside the circle
+                    textureData[idx] = 0;
+                    textureData[idx + 1] = 0;
+                    textureData[idx + 2] = 0;
+                    textureData[idx + 3] = 0;
+                }
+            }
+        }
+
+        glGenTextures(1, &g_particleTexture);
+        glBindTexture(GL_TEXTURE_2D, g_particleTexture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TEX_SIZE, TEX_SIZE, 0, GL_RGBA, GL_UNSIGNED_BYTE, textureData.data());
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    }
+}
+
+void spawn_explosion(const glm::vec2& position) {
+    // Create 10-15 particles for the explosion
+    int numParticles = 10 + rand() % 6;
+
+    for (int i = 0; i < numParticles && particles.size() < MAX_PARTICLES; ++i) {
+        Particle p;
+        p.position = position;
+
+        // Random direction and speed
+        float angle = static_cast<float>(rand()) / RAND_MAX * 2.0f * 3.14159f;
+        float speed = 2.0f + static_cast<float>(rand()) / RAND_MAX * 3.0f;
+        p.velocity = glm::vec2(cos(angle) * speed, sin(angle) * speed);
+
+        p.life = 0.5f + static_cast<float>(rand()) / RAND_MAX * 0.5f; // 0.5-1.0 seconds
+        p.size = g_particleSize * (0.7f + static_cast<float>(rand()) / RAND_MAX * 0.6f); // Vary size
+        p.rotation = static_cast<float>(rand()) / RAND_MAX * 2.0f * 3.14159f;
+        p.rotationSpeed = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 4.0f;
+
+        particles.push_back(p);
+    }
+}
+
+void update_particles(float deltaTime) {
+    for (auto it = particles.begin(); it != particles.end(); ) {
+        it->life -= deltaTime;
+
+        if (it->life <= 0.0f) {
+            // Remove dead particles
+            it = particles.erase(it);
+        }
+        else {
+            // Update position and rotation
+            it->position += it->velocity * deltaTime;
+            it->rotation += it->rotationSpeed * deltaTime;
+
+            // Apply gravity
+            it->velocity.y -= 10.0f * deltaTime;
+
+            // Scale down as particle dies
+            it->size = g_particleSize * (it->life / 0.5f) * (0.7f + 0.3f * (it->life / 0.5f));
+
+            ++it;
+        }
+    }
+}
+
+void render_particles(const glm::mat4& proj) {
+    glUseProgram(g_prog);
+    glBindVertexArray(g_vao);
+    glUniform1i(g_uTexture, 0);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_particleTexture);
+
+    for (const auto& p : particles) {
+        float px = p.position.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f;
+        float py = p.position.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f;
+
+        glm::mat4 model(1.0f);
+        model = glm::translate(model, { px, py, 0.0f });
+        model = glm::rotate(model, p.rotation, { 0, 0, 1 });
+        model = glm::scale(model, { p.size * PIXELS_PER_METER * 2.0f,
+                                  p.size * PIXELS_PER_METER * 2.0f, 1.0f });
+
+        glm::mat4 mvp = proj * model;
+        glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
+
+        // Fade out as particle dies
+        float alpha = p.life / 0.5f;
+        glm::vec3 color(1.0f, 0.8f, 0.4f * alpha);
+        glUniform3f(g_uColor, color.r, color.g, color.b);
+        glUniform1i(g_uUseTexture, true);
+
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
     }
 }
 
@@ -295,6 +459,9 @@ int main() {
     if (groundTexture == 0) {
         groundTexture = create_procedural_texture(64, 64, glm::vec3(0.4f, 0.6f, 0.3f), glm::vec3(0.3f, 0.5f, 0.2f));
     }
+
+    // Initialize particle system
+    init_particle_system();
 
     // Box2D world
     b2WorldDef worldDef = b2DefaultWorldDef();
@@ -353,6 +520,9 @@ int main() {
 
         process_input(win, player);
         b2World_Step(g_world, timeStep, 8);
+
+        // Update particles
+        update_particles(deltaTime);
 
         // --- 1-meter proximity AABB ---
         AABB playerBox = getAABBWithProximity(player, 1.0f, 1.0f, 1.0f); // 1 meter
@@ -420,6 +590,9 @@ int main() {
         drawBody(player, 1.0f, 1.0f);
         drawBody(box, 0.5f, 0.5f);
 
+        // Render particles
+        render_particles(proj);
+
         glfwSwapBuffers(win);
         glfwPollEvents();
     }
@@ -433,6 +606,7 @@ int main() {
     glDeleteTextures(1, &playerTexture);
     glDeleteTextures(1, &boxTexture);
     glDeleteTextures(1, &groundTexture);
+    glDeleteTextures(1, &g_particleTexture);
 
     b2DestroyWorld(g_world);
     glfwTerminate();
