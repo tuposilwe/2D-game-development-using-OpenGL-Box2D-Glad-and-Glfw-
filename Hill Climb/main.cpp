@@ -37,6 +37,10 @@ struct UserData {
     glm::vec3* color;
     GLuint textureID;
     bool useTexture;
+ 
+    float animationTime;  // Track animation time for pulsing effect
+    bool isAnimating;     // Track if animation is active
+    float animationScale;
 };
 
 // Colors
@@ -233,6 +237,25 @@ void process_input(GLFWwindow* win, b2BodyId player) {
     }
 }
 
+// ---------------- Animation Functions ----------------
+void update_box_animation(UserData* boxUD, float deltaTime, bool isPlayerNear) {
+    if (isPlayerNear) {
+        // Start or continue animation
+        boxUD->isAnimating = true;
+        boxUD->animationTime += deltaTime;
+
+        // Pulse effect: scale between 0.9 and 1.1 of original size
+        float pulse = 0.1f * sin(boxUD->animationTime * 5.0f); // 5 Hz pulse
+        boxUD->animationScale = 1.0f + pulse;
+    }
+    else {
+        // Reset animation when player moves away
+        boxUD->isAnimating = false;
+        boxUD->animationTime = 0.0f;
+        boxUD->animationScale = 1.0f;
+    }
+}
+
 // ---------------- Main ----------------
 int main() {
     if (!glfwInit()) return -1;
@@ -283,7 +306,7 @@ int main() {
     groundDef.type = b2_staticBody;
     groundDef.position = { 0.0f,-5.0f };
     b2BodyId ground = b2CreateBody(g_world, &groundDef);
-    UserData* groundUD = new UserData{ ENTITY_GROUND, &g_groundColor, groundTexture, true };
+    UserData* groundUD = new UserData{ ENTITY_GROUND, &g_groundColor, groundTexture, true, 0.0f, false, 1.0f };
     b2Body_SetUserData(ground, groundUD);
     b2Polygon groundShape = b2MakeBox(50.0f, 0.1f);
     b2ShapeDef groundSD = b2DefaultShapeDef();
@@ -294,7 +317,7 @@ int main() {
     playerDef.type = b2_dynamicBody;
     playerDef.position = { 0.0f,10.0f };
     b2BodyId player = b2CreateBody(g_world, &playerDef);
-    UserData* playerUD = new UserData{ ENTITY_PLAYER,&g_playerColor, playerTexture,false };
+    UserData* playerUD = new UserData{ ENTITY_PLAYER,nullptr, playerTexture,true, 0.0f, false, 1.0f };
     b2Body_SetUserData(player, playerUD);
     b2Polygon playerShape = b2MakeBox(1.0f, 1.0f);
     b2ShapeDef playerSD = b2DefaultShapeDef(); playerSD.density = 1.0f; playerSD.material.friction = 0.3f;
@@ -305,7 +328,7 @@ int main() {
     boxDef.type = b2_dynamicBody;
     boxDef.position = { 2.0f,6.0f };
     b2BodyId box = b2CreateBody(g_world, &boxDef);
-    UserData* boxUD = new UserData{ ENTITY_BOX, new glm::vec3(g_boxColor), boxTexture, true };
+    UserData* boxUD = new UserData{ ENTITY_BOX, new glm::vec3(g_boxColor), boxTexture, true, 0.0f, false, 1.0f };
     b2Body_SetUserData(box, boxUD);
     b2Polygon boxShape = b2MakeBox(0.5f, 0.5f);
     b2ShapeDef boxSD = b2DefaultShapeDef(); boxSD.density = 1.0f; boxSD.material.friction = 0.3f;
@@ -315,13 +338,19 @@ int main() {
     glm::mat4 proj = glm::ortho(0.0f, float(WINDOW_WIDTH), 0.0f, float(WINDOW_HEIGHT), -1.0f, 1.0f);
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
 
-
-    // tells OpenGL to properly handle the alpha channel in your PNGs.
-    // Now only the opaque parts of the texture are drawn,and the transparent parts stay transparent.
+    // Tells OpenGL to properly handle the alpha channel in your PNGs
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    // For tracking time between frames
+    float lastTime = glfwGetTime();
+
     while (!glfwWindowShouldClose(win)) {
+        // Calculate delta time
+        float currentTime = glfwGetTime();
+        float deltaTime = currentTime - lastTime;
+        lastTime = currentTime;
+
         process_input(win, player);
         b2World_Step(g_world, timeStep, 8);
 
@@ -329,7 +358,12 @@ int main() {
         AABB playerBox = getAABBWithProximity(player, 1.0f, 1.0f, 1.0f); // 1 meter
         *(boxUD->color) = g_boxColor; // reset
         AABB boxAABB = getAABBWithProximity(box, 0.5f, 0.5f, 0.0f); // box normal size
-        if (aabbOverlap(playerBox, boxAABB)) *(boxUD->color) = g_yellowColor;
+
+        bool isPlayerNear = aabbOverlap(playerBox, boxAABB);
+        if (isPlayerNear) *(boxUD->color) = g_yellowColor;
+
+        // Update box animation
+        update_box_animation(boxUD, deltaTime, isPlayerNear);
 
         // Auto reset if player falls
         b2Vec2 ppos = b2Body_GetPosition(player);
@@ -354,11 +388,16 @@ int main() {
             glm::mat4 model(1.0f);
             model = glm::translate(model, { px,py,0.0f });
             model = glm::rotate(model, angle, { 0,0,1 });
-            model = glm::scale(model, { w * PIXELS_PER_METER * 2.0f,h * PIXELS_PER_METER * 2.0f,1.0f });
+
+            // Apply animation scale if needed
+            UserData* ud = (UserData*)b2Body_GetUserData(b);
+            float scale = ud ? ud->animationScale : 1.0f;
+            model = glm::scale(model, { w * PIXELS_PER_METER * 2.0f * scale,
+                                        h * PIXELS_PER_METER * 2.0f * scale, 1.0f });
+
             glm::mat4 mvp = proj * model;
             glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
 
-            UserData* ud = (UserData*)b2Body_GetUserData(b);
             if (ud) {
                 glUniform3f(g_uColor, ud->color ? ud->color->r : 1.0f,
                     ud->color ? ud->color->g : 1.0f,
