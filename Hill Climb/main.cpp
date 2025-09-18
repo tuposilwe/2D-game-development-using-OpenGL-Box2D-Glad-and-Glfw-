@@ -258,12 +258,12 @@ int main() {
     g_uTexture = glGetUniformLocation(g_prog, "uTexture");
 
     // Load textures (or create procedural ones if files not available)
-    GLuint playerTexture = load_texture("box.png");
+    GLuint playerTexture = load_texture("enemy2.png");
     if (playerTexture == 0) {
         playerTexture = create_procedural_texture(64, 64, glm::vec3(0.9f, 0.3f, 0.25f), glm::vec3(0.7f, 0.2f, 0.2f));
     }
 
-    GLuint boxTexture = load_texture("boxd.png");
+    GLuint boxTexture = load_texture("playegr.png");
     if (boxTexture == 0) {
         boxTexture = create_procedural_texture(64, 64, glm::vec3(0.2f, 0.5f, 0.8f), glm::vec3(0.1f, 0.3f, 0.6f));
     }
@@ -294,7 +294,7 @@ int main() {
     playerDef.type = b2_dynamicBody;
     playerDef.position = { 0.0f,10.0f };
     b2BodyId player = b2CreateBody(g_world, &playerDef);
-    UserData* playerUD = new UserData{ ENTITY_PLAYER, &g_playerColor, playerTexture, true };
+    UserData* playerUD = new UserData{ ENTITY_PLAYER,&g_playerColor, playerTexture,false };
     b2Body_SetUserData(player, playerUD);
     b2Polygon playerShape = b2MakeBox(1.0f, 1.0f);
     b2ShapeDef playerSD = b2DefaultShapeDef(); playerSD.density = 1.0f; playerSD.material.friction = 0.3f;
@@ -314,6 +314,12 @@ int main() {
     float timeStep = 1.0f / 60.0f;
     glm::mat4 proj = glm::ortho(0.0f, float(WINDOW_WIDTH), 0.0f, float(WINDOW_HEIGHT), -1.0f, 1.0f);
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
+
+
+    // tells OpenGL to properly handle the alpha channel in your PNGs.
+    // Now only the opaque parts of the texture are drawn,and the transparent parts stay transparent.
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     while (!glfwWindowShouldClose(win)) {
         process_input(win, player);
