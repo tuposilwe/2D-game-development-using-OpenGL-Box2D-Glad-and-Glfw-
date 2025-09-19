@@ -5,6 +5,8 @@
 #include <cmath>
 #include <vector>
 #include <cstdlib> // For rand()
+#include <map>
+#include <string>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -13,6 +15,9 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+
+#include <ft2build.h>
+#include FT_FREETYPE_H
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb/stb_image.h"
@@ -31,7 +36,7 @@ GLint g_uColor;
 GLint g_uUseTexture;
 GLint g_uTexture;
 
-enum EntityType { ENTITY_NONE, ENTITY_PLAYER, ENTITY_BOX, ENTITY_GROUND };
+enum EntityType { ENTITY_NONE, ENTITY_PLAYER, ENTITY_BOX, ENTITY_GROUND, ENTITY_BULLET };
 
 struct UserData {
     EntityType type;
@@ -49,6 +54,8 @@ glm::vec3 g_playerColor(0.9f, 0.3f, 0.25f);
 glm::vec3 g_boxColor(0.2f, 0.5f, 0.8f);
 glm::vec3 g_yellowColor(1.0f, 1.0f, 0.0f);
 glm::vec3 g_groundColor(0.4f, 0.6f, 0.3f);
+glm::vec3 g_bulletColor(1.0f, 0.8f, 0.2f);
+
 
 // ---------------- Particle System ----------------
 struct Particle {
@@ -70,6 +77,47 @@ void init_particle_system();
 void spawn_explosion(const glm::vec2& position);
 void update_particles(float deltaTime);
 void render_particles(const glm::mat4& proj);
+
+
+
+// ---------------- Score System with Pixel Font ----------------
+struct FloatingText {
+    std::string text;
+    glm::vec2 position; // in pixels
+    float life;
+    float duration;
+    float scale;
+    glm::vec3 color;
+    glm::vec3 shadowColor;
+    glm::vec2 shadowOffset;
+};
+
+std::vector<FloatingText> floatingTexts;
+int currentScore = 0;
+bool wasPlayerNear = false;
+
+// Font rendering
+struct Character {
+    GLuint textureID;
+    glm::ivec2 size;
+    glm::ivec2 bearing;
+    unsigned int advance;
+};
+
+std::map<char, Character> characters;
+GLuint fontVAO, fontVBO;
+GLuint fontProgram;
+GLint font_uMVP, font_uTextColor, font_uTexture;
+
+
+
+void init_font_rendering();
+void render_text(const std::string& text, float x, float y, float scale,
+    const glm::vec3& color, const glm::vec3& shadowColor,
+    const glm::vec2& shadowOffset);
+void spawn_score_popup(int points, const glm::vec2& position);
+void update_score_popups(float deltaTime);
+void render_score_popups(const glm::mat4& proj);
 
 // ---------------- Shaders ----------------
 const char* vertex_shader_src = R"(
@@ -97,6 +145,30 @@ void main() {
     } else {
         FragColor = vec4(uColor, 1.0);
     }
+}
+)";
+
+// Font shaders
+const char* font_vertex_shader_src = R"(
+#version 330 core
+layout(location = 0) in vec4 vertex; // xy = pos, zw = tex
+out vec2 TexCoords;
+uniform mat4 uMVP;
+void main() {
+    gl_Position = uMVP * vec4(vertex.xy, 0.0, 1.0);
+    TexCoords = vertex.zw;
+}
+)";
+
+const char* font_fragment_shader_src = R"(
+#version 330 core
+in vec2 TexCoords;
+out vec4 FragColor;
+uniform sampler2D text;
+uniform vec3 textColor;
+void main() {
+    float alpha = texture(text, TexCoords).r;
+    FragColor = vec4(textColor, alpha);
 }
 )";
 
@@ -257,7 +329,6 @@ void process_input(GLFWwindow* win, b2BodyId player) {
         b2Body_SetTransform(player, { 0.0f,10.0f }, b2MakeRot(0.0f));
         b2Body_SetLinearVelocity(player, { 0.0f,0.0f });
     }
-
     // Particle explosion on X key
     static bool xKeyPressed = false;
     if (glfwGetKey(win, GLFW_KEY_X) == GLFW_PRESS) {
@@ -290,6 +361,7 @@ void update_box_animation(UserData* boxUD, float deltaTime, bool isPlayerNear) {
         boxUD->animationScale = 1.0f;
     }
 }
+
 
 // ---------------- Particle System Functions ----------------
 void init_particle_system() {
@@ -420,6 +492,208 @@ void render_particles(const glm::mat4& proj) {
     }
 }
 
+
+// ---------------- Font Rendering Functions ----------------
+void init_font_rendering() {
+    // Initialize FreeType
+    FT_Library ft;
+    if (FT_Init_FreeType(&ft)) {
+        std::cout << "ERROR::FREETYPE: Could not init FreeType Library" << std::endl;
+        return;
+    }
+
+    // Load font (try a few common font paths)
+    const char* fontPaths[] = {
+        "PressStart2P.ttf",  // Pixel font
+        "arial.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+    };
+
+    FT_Face face = 0;
+    bool fontLoaded = false;
+
+    for (const char* fontPath : fontPaths) {
+        if (FT_New_Face(ft, fontPath, 0, &face) == 0) {
+            fontLoaded = true;
+            std::cout << "Loaded font: " << fontPath << std::endl;
+            break;
+        }
+    }
+
+    if (!fontLoaded) {
+        std::cout << "ERROR::FREETYPE: Failed to load any font" << std::endl;
+        FT_Done_FreeType(ft);
+        return;
+    }
+
+    // Set size to load glyphs as
+    FT_Set_Pixel_Sizes(face, 0, 30); // Pixel font size
+
+    // Disable byte-alignment restriction
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    // Load first 128 characters of ASCII set
+    for (unsigned char c = 0; c < 128; c++) {
+        // Load character glyph
+        if (FT_Load_Char(face, c, FT_LOAD_RENDER)) {
+            std::cout << "ERROR::FREETYPE: Failed to load Glyph: " << c << std::endl;
+            continue;
+        }
+
+        // Generate texture
+        GLuint texture;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RED,
+            face->glyph->bitmap.width,
+            face->glyph->bitmap.rows,
+            0,
+            GL_RED,
+            GL_UNSIGNED_BYTE,
+            face->glyph->bitmap.buffer
+        );
+
+        // Set texture options - nearest-neighbor to keep pixel look
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+        // Now store character for later use
+        Character character = {
+            texture,
+            glm::ivec2(face->glyph->bitmap.width, face->glyph->bitmap.rows),
+            glm::ivec2(face->glyph->bitmap_left, face->glyph->bitmap_top),
+            static_cast<unsigned int>(face->glyph->advance.x)
+        };
+        characters.insert(std::pair<char, Character>(c, character));
+    }
+
+    // Destroy FreeType once we're finished
+    FT_Done_Face(face);
+    FT_Done_FreeType(ft);
+
+    // Configure font VAO/VBO for texture quads
+    glGenVertexArrays(1, &fontVAO);
+    glGenBuffers(1, &fontVBO);
+    glBindVertexArray(fontVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, fontVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 6 * 4, NULL, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), 0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+
+    // Compile font shaders
+    GLuint fontVS = compile_shader(font_vertex_shader_src, GL_VERTEX_SHADER);
+    GLuint fontFS = compile_shader(font_fragment_shader_src, GL_FRAGMENT_SHADER);
+    fontProgram = link_program(fontVS, fontFS);
+    glDeleteShader(fontVS);
+    glDeleteShader(fontFS);
+
+    // Get uniform locations
+    font_uMVP = glGetUniformLocation(fontProgram, "uMVP");
+    font_uTextColor = glGetUniformLocation(fontProgram, "textColor");
+    font_uTexture = glGetUniformLocation(fontProgram, "text");
+}
+
+void render_text(const std::string& text, float x, float y, float scale,
+    const glm::vec3& color, const glm::vec3& shadowColor,
+    const glm::vec2& shadowOffset) {
+    glUseProgram(fontProgram);
+    glm::mat4 projection = glm::ortho(0.0f, static_cast<float>(WINDOW_WIDTH),
+        0.0f, static_cast<float>(WINDOW_HEIGHT));
+    glUniformMatrix4fv(font_uMVP, 1, GL_FALSE, glm::value_ptr(projection));
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindVertexArray(fontVAO);
+
+    auto draw = [&](glm::vec3 c, float dx, float dy) {
+        glUniform3f(font_uTextColor, c.r, c.g, c.b);
+
+        float xpos = x + dx;
+        float ypos = y + dy;
+
+        for (auto ch : text) {
+            Character chdata = characters[ch];
+
+            float xposc = xpos + chdata.bearing.x * scale;
+            float yposc = ypos - (chdata.size.y - chdata.bearing.y) * scale;
+            float w = chdata.size.x * scale;
+            float h = chdata.size.y * scale;
+
+            float vertices[6][4] = {
+                { xposc, yposc + h, 0.0f, 0.0f },
+                { xposc, yposc,     0.0f, 1.0f },
+                { xposc + w, yposc, 1.0f, 1.0f },
+
+                { xposc, yposc + h, 0.0f, 0.0f },
+                { xposc + w, yposc, 1.0f, 1.0f },
+                { xposc + w, yposc + h, 1.0f, 0.0f }
+            };
+
+            glBindTexture(GL_TEXTURE_2D, chdata.textureID);
+            glBindBuffer(GL_ARRAY_BUFFER, fontVBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(vertices), vertices);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+
+            xpos += (chdata.advance >> 6) * scale;
+        }
+        };
+
+    // Draw shadow first
+    draw(shadowColor, shadowOffset.x, shadowOffset.y);
+    // Draw main text on top
+    draw(color, 0, 0);
+
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+
+void spawn_score_popup(int points, const glm::vec2& position) {
+    FloatingText ft;
+    ft.text = "+" + std::to_string(points);
+    ft.position = glm::vec2(position.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f,
+        position.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f);
+    ft.life = 1.5f;
+    ft.duration = 1.5f;
+    ft.scale = 0.5f; // this makes score popup small
+    ft.color = glm::vec3(1.0f, 1.0f, 1.0f); // White
+    ft.shadowColor = glm::vec3(0.2f, 0.6f, 1.0f);  // Blue shadow
+    ft.shadowOffset = glm::vec2(2, -2); // Smaller shadow offset
+
+    floatingTexts.push_back(ft);
+}
+
+void update_score_popups(float deltaTime) {
+    for (auto it = floatingTexts.begin(); it != floatingTexts.end();) {
+        it->life -= deltaTime;
+        if (it->life <= 0.0f) {
+            it = floatingTexts.erase(it);
+        }
+        else {
+            it->position.y += 40.0f * deltaTime; // rise speed
+            ++it;
+        }
+    }
+}
+
+void render_score_popups(const glm::mat4& proj) {
+    for (const auto& ft : floatingTexts) {
+        float alpha = ft.life / ft.duration;
+        glm::vec3 color = ft.color * alpha;
+        glm::vec3 shadow = ft.shadowColor * alpha;
+        render_text(ft.text, ft.position.x, ft.position.y, ft.scale, color, shadow, ft.shadowOffset);
+    }
+}
+
 // ---------------- Main ----------------
 int main() {
     if (!glfwInit()) return -1;
@@ -460,8 +734,11 @@ int main() {
         groundTexture = create_procedural_texture(64, 64, glm::vec3(0.4f, 0.6f, 0.3f), glm::vec3(0.3f, 0.5f, 0.2f));
     }
 
-    // Initialize particle system
+    // Initialize bullet system
     init_particle_system();
+
+    // Initialize font rendering
+    init_font_rendering();
 
     // Box2D world
     b2WorldDef worldDef = b2DefaultWorldDef();
@@ -523,6 +800,10 @@ int main() {
 
         // Update particles
         update_particles(deltaTime);
+        
+
+        // Update score popups
+        update_score_popups(deltaTime);
 
         // --- 1-meter proximity AABB ---
         AABB playerBox = getAABBWithProximity(player, 1.0f, 1.0f, 1.0f); // 1 meter
@@ -530,7 +811,21 @@ int main() {
         AABB boxAABB = getAABBWithProximity(box, 0.5f, 0.5f, 0.0f); // box normal size
 
         bool isPlayerNear = aabbOverlap(playerBox, boxAABB);
-        if (isPlayerNear) *(boxUD->color) = g_yellowColor;
+        if (isPlayerNear) {
+            *(boxUD->color) = g_yellowColor;
+
+            // Add score and spawn popup (only once per collision)
+            if (!wasPlayerNear) {
+                currentScore += 10;
+                b2Vec2 boxPos = b2Body_GetPosition(box);
+                spawn_score_popup(10, glm::vec2(boxPos.x, boxPos.y + 1.0f));
+                std::cout << "Score: " << currentScore << std::endl;
+            }
+            wasPlayerNear = true;
+        }
+        else {
+            wasPlayerNear = false;
+        }
 
         // Update box animation
         update_box_animation(boxUD, deltaTime, isPlayerNear);
@@ -593,6 +888,13 @@ int main() {
         // Render particles
         render_particles(proj);
 
+        // Render score popups
+        render_score_popups(proj);
+
+        // Render current score in the corner with pixel font
+        render_text("Score:" + std::to_string(currentScore), 20.0f, WINDOW_HEIGHT - 40.0f, 0.8f,
+            glm::vec3(1, 1, 1), glm::vec3(0.2f, 0.6f, 1.0f), glm::vec2(2, -2));
+
         glfwSwapBuffers(win);
         glfwPollEvents();
     }
@@ -603,9 +905,20 @@ int main() {
     delete boxUD;
     delete groundUD;
 
+    // Cleanup font resources
+    glDeleteVertexArrays(1, &fontVAO);
+    glDeleteBuffers(1, &fontVBO);
+    glDeleteProgram(fontProgram);
+
+    // Cleanup character textures
+    for (auto& character : characters) {
+        glDeleteTextures(1, &character.second.textureID);
+    }
+
     glDeleteTextures(1, &playerTexture);
     glDeleteTextures(1, &boxTexture);
     glDeleteTextures(1, &groundTexture);
+   
     glDeleteTextures(1, &g_particleTexture);
 
     b2DestroyWorld(g_world);
