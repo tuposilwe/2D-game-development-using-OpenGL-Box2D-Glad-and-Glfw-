@@ -1,5 +1,5 @@
 // main.cpp
-// Box2D + OpenGL Game with Textures, 1-meter proximity AABB collision and EBO
+// Box2D + OpenGL Game with Textures, 1-meter proximity AABB collision, EBO, and Health Bar
 
 #include <iostream>
 #include <cmath>
@@ -56,6 +56,139 @@ glm::vec3 g_yellowColor(1.0f, 1.0f, 0.0f);
 glm::vec3 g_groundColor(0.4f, 0.6f, 0.3f);
 glm::vec3 g_bulletColor(1.0f, 0.8f, 0.2f);
 
+// Health system
+int playerHealth = 100;
+int maxHealth = 100;
+bool isPlayerDead = false;
+float respawnTimer = 0.0f;
+const float RESPAWN_TIME = 3.0f;
+
+// ---------------- Health Bar System ----------------
+GLuint healthBarVAO, healthBarVBO;
+
+void init_health_bar() {
+    float vertices[] = {
+        // positions
+        0.0f, 0.0f,
+        1.0f, 0.0f,
+        1.0f, 1.0f,
+        0.0f, 1.0f
+    };
+
+    glGenVertexArrays(1, &healthBarVAO);
+    glGenBuffers(1, &healthBarVBO);
+
+    glBindVertexArray(healthBarVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, healthBarVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+
+    glBindVertexArray(0);
+}
+
+void render_world_space_health_bar(b2BodyId player, const glm::mat4& proj) {
+    if (isPlayerDead) return;
+
+    b2Vec2 playerPos = b2Body_GetPosition(player);
+    float healthPercent = static_cast<float>(playerHealth) / maxHealth;
+
+    // Convert world coordinates to screen coordinates
+    float screenX = playerPos.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f;
+    float screenY = playerPos.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f + 80.0f; // Above player
+
+    glUseProgram(g_prog);
+    glBindVertexArray(healthBarVAO);
+    glUniform1i(g_uUseTexture, false);
+
+    // Background (empty part)
+    glm::mat4 model(1.0f);
+    model = glm::translate(model, { screenX - 40.0f, screenY, 0.0f });
+    model = glm::scale(model, { 80.0f, 8.0f, 1.0f });
+    glm::mat4 mvp = proj * model;
+    glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
+    glUniform3f(g_uColor, 0.3f, 0.3f, 0.3f);
+    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+    // Health (filled part)
+    model = glm::mat4(1.0f);
+    model = glm::translate(model, { screenX - 40.0f, screenY, 0.0f });
+    model = glm::scale(model, { 80.0f * healthPercent, 8.0f, 1.0f });
+    mvp = proj * model;
+    glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
+
+    // Color changes based on health level
+    if (healthPercent > 0.6f) {
+        glUniform3f(g_uColor, 0.2f, 0.8f, 0.2f); // Green
+    }
+    else if (healthPercent > 0.3f) {
+        glUniform3f(g_uColor, 1.0f, 0.8f, 0.2f); // Yellow
+    }
+    else {
+        glUniform3f(g_uColor, 0.8f, 0.2f, 0.2f); // Red
+    }
+
+    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+    // Border
+    model = glm::mat4(1.0f);
+    model = glm::translate(model, { screenX - 40.0f, screenY, 0.0f });
+    model = glm::scale(model, { 80.0f, 8.0f, 1.0f });
+    mvp = proj * model;
+    glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
+    glUniform3f(g_uColor, 1.0f, 1.0f, 1.0f);
+    glDrawArrays(GL_LINE_LOOP, 0, 4);
+}
+
+void render_screen_health_bar(const glm::mat4& proj) {
+    float healthPercent = static_cast<float>(playerHealth) / maxHealth;
+    float healthBarWidth = 200.0f;
+    float healthBarHeight = 20.0f;
+    float posX = 20.0f;
+    float posY = WINDOW_HEIGHT - 60.0f;
+
+    glUseProgram(g_prog);
+    glBindVertexArray(healthBarVAO);
+    glUniform1i(g_uUseTexture, false);
+
+    // Background
+    glm::mat4 model(1.0f);
+    model = glm::translate(model, { posX, posY, 0.0f });
+    model = glm::scale(model, { healthBarWidth, healthBarHeight, 1.0f });
+    glm::mat4 mvp = proj * model;
+    glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
+    glUniform3f(g_uColor, 0.5f, 0.1f, 0.1f);
+    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+    // Health
+    model = glm::mat4(1.0f);
+    model = glm::translate(model, { posX, posY, 0.0f });
+    model = glm::scale(model, { healthBarWidth * healthPercent, healthBarHeight, 1.0f });
+    mvp = proj * model;
+    glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
+
+    if (healthPercent > 0.6f) {
+        glUniform3f(g_uColor, 0.2f, 0.8f, 0.2f);
+    }
+    else if (healthPercent > 0.3f) {
+        glUniform3f(g_uColor, 1.0f, 0.8f, 0.2f);
+    }
+    else {
+        glUniform3f(g_uColor, 0.8f, 0.2f, 0.2f);
+    }
+
+    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+    // Border
+    model = glm::mat4(1.0f);
+    model = glm::translate(model, { posX, posY, 0.0f });
+    model = glm::scale(model, { healthBarWidth, healthBarHeight, 1.0f });
+    mvp = proj * model;
+    glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
+    glUniform3f(g_uColor, 1.0f, 1.0f, 1.0f);
+    glDrawArrays(GL_LINE_LOOP, 0, 4);
+}
 
 // ---------------- Particle System ----------------
 struct Particle {
@@ -77,8 +210,6 @@ void init_particle_system();
 void spawn_explosion(const glm::vec2& position);
 void update_particles(float deltaTime);
 void render_particles(const glm::mat4& proj);
-
-
 
 // ---------------- Score System with Pixel Font ----------------
 struct FloatingText {
@@ -109,15 +240,69 @@ GLuint fontVAO, fontVBO;
 GLuint fontProgram;
 GLint font_uMVP, font_uTextColor, font_uTexture;
 
-
-
 void init_font_rendering();
 void render_text(const std::string& text, float x, float y, float scale,
     const glm::vec3& color, const glm::vec3& shadowColor,
     const glm::vec2& shadowOffset);
 void spawn_score_popup(int points, const glm::vec2& position);
+void spawn_damage_effect(int damage, const glm::vec2& position);
+void spawn_heal_effect(int amount, const glm::vec2& position);
 void update_score_popups(float deltaTime);
 void render_score_popups(const glm::mat4& proj);
+
+// ---------------- Health Management ----------------
+
+// ADD THE MISSING FUNCTION HERE
+void player_died(b2BodyId player) {
+    isPlayerDead = true;
+    respawnTimer = RESPAWN_TIME;
+
+    std::cout << "Player died! Final Score: " << currentScore << std::endl;
+
+    // Death effect
+    b2Vec2 playerPos = b2Body_GetPosition(player);
+    spawn_explosion(glm::vec2(playerPos.x, playerPos.y));
+
+    // Make player fall through ground
+    b2Body_SetGravityScale(player, 2.0f);
+}
+
+void take_damage(int damage, b2BodyId player) {
+    if (isPlayerDead) return;
+
+    playerHealth -= damage;
+    if (playerHealth < 0) playerHealth = 0;
+
+    // Visual feedback
+    b2Vec2 playerPos = b2Body_GetPosition(player);
+    spawn_damage_effect(damage, glm::vec2(playerPos.x, playerPos.y));
+
+    if (playerHealth <= 0) {
+        player_died(player);
+    }
+}
+
+void heal(int amount, b2BodyId player) {
+    playerHealth += amount;
+    if (playerHealth > maxHealth) playerHealth = maxHealth;
+
+    // Visual feedback for healing
+    b2Vec2 playerPos = b2Body_GetPosition(player);
+    spawn_heal_effect(amount, glm::vec2(playerPos.x, playerPos.y));
+}
+
+
+
+void respawn_player(b2BodyId player) {
+    isPlayerDead = false;
+    playerHealth = maxHealth;
+    b2Body_SetGravityScale(player, 1.0f);
+    b2Body_SetTransform(player, { 0.0f, 10.0f }, b2MakeRot(0.0f));
+    b2Body_SetLinearVelocity(player, { 0.0f, 0.0f });
+
+    // Respawn effect
+    spawn_explosion(glm::vec2(0.0f, 10.0f));
+}
 
 // ---------------- Shaders ----------------
 const char* vertex_shader_src = R"(
@@ -317,6 +502,8 @@ bool aabbOverlap(const AABB& a, const AABB& b) {
 
 // ---------------- Input ----------------
 void process_input(GLFWwindow* win, b2BodyId player) {
+    if (isPlayerDead) return; // No input when dead
+
     float moveForce = 20.0f;
     float jumpImpulse = 6.0f;
     if (glfwGetKey(win, GLFW_KEY_LEFT) == GLFW_PRESS) b2Body_ApplyForceToCenter(player, { -moveForce,0.0f }, true);
@@ -329,6 +516,7 @@ void process_input(GLFWwindow* win, b2BodyId player) {
         b2Body_SetTransform(player, { 0.0f,10.0f }, b2MakeRot(0.0f));
         b2Body_SetLinearVelocity(player, { 0.0f,0.0f });
     }
+
     // Particle explosion on X key
     static bool xKeyPressed = false;
     if (glfwGetKey(win, GLFW_KEY_X) == GLFW_PRESS) {
@@ -340,6 +528,30 @@ void process_input(GLFWwindow* win, b2BodyId player) {
     }
     else {
         xKeyPressed = false;
+    }
+
+    // Damage test on H key
+    static bool hKeyPressed = false;
+    if (glfwGetKey(win, GLFW_KEY_H) == GLFW_PRESS) {
+        if (!hKeyPressed) {
+            take_damage(10, player);
+            hKeyPressed = true;
+        }
+    }
+    else {
+        hKeyPressed = false;
+    }
+
+    // Heal test on J key
+    static bool jKeyPressed = false;
+    if (glfwGetKey(win, GLFW_KEY_J) == GLFW_PRESS) {
+        if (!jKeyPressed) {
+            heal(15, player);
+            jKeyPressed = true;
+        }
+    }
+    else {
+        jKeyPressed = false;
     }
 }
 
@@ -362,7 +574,6 @@ void update_box_animation(UserData* boxUD, float deltaTime, bool isPlayerNear) {
     }
 }
 
-
 // ---------------- Particle System Functions ----------------
 void init_particle_system() {
     particles.reserve(MAX_PARTICLES);
@@ -372,7 +583,7 @@ void init_particle_system() {
 
     // If loading fails, create a simple fallback texture
     if (g_particleTexture == 0) {
-        std::cout << "Failed to load particle.png, creating fallback texture" << std::endl;
+        std::cout << "Failed to load explosion.png, creating fallback texture" << std::endl;
 
         const int TEX_SIZE = 64;
         std::vector<unsigned char> textureData(TEX_SIZE * TEX_SIZE * 4);
@@ -491,7 +702,6 @@ void render_particles(const glm::mat4& proj) {
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
     }
 }
-
 
 // ---------------- Font Rendering Functions ----------------
 void init_font_rendering() {
@@ -656,7 +866,6 @@ void render_text(const std::string& text, float x, float y, float scale,
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-
 void spawn_score_popup(int points, const glm::vec2& position) {
     FloatingText ft;
     ft.text = "+" + std::to_string(points);
@@ -664,10 +873,40 @@ void spawn_score_popup(int points, const glm::vec2& position) {
         position.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f);
     ft.life = 1.5f;
     ft.duration = 1.5f;
-    ft.scale = 0.5f; // this makes score popup small
-    ft.color = glm::vec3(1.0f, 1.0f, 1.0f); // White
-    ft.shadowColor = glm::vec3(0.2f, 0.6f, 1.0f);  // Blue shadow
-    ft.shadowOffset = glm::vec2(2, -2); // Smaller shadow offset
+    ft.scale = 0.5f;
+    ft.color = glm::vec3(1.0f, 1.0f, 1.0f);
+    ft.shadowColor = glm::vec3(0.2f, 0.6f, 1.0f);
+    ft.shadowOffset = glm::vec2(2, -2);
+
+    floatingTexts.push_back(ft);
+}
+
+void spawn_damage_effect(int damage, const glm::vec2& position) {
+    FloatingText ft;
+    ft.text = "-" + std::to_string(damage);
+    ft.position = glm::vec2(position.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f,
+        position.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f + 50.0f);
+    ft.life = 1.0f;
+    ft.duration = 1.0f;
+    ft.scale = 0.7f;
+    ft.color = glm::vec3(1.0f, 0.3f, 0.3f);
+    ft.shadowColor = glm::vec3(0.5f, 0.1f, 0.1f);
+    ft.shadowOffset = glm::vec2(1, -1);
+
+    floatingTexts.push_back(ft);
+}
+
+void spawn_heal_effect(int amount, const glm::vec2& position) {
+    FloatingText ft;
+    ft.text = "+" + std::to_string(amount) + " HP";
+    ft.position = glm::vec2(position.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f,
+        position.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f + 50.0f);
+    ft.life = 1.5f;
+    ft.duration = 1.5f;
+    ft.scale = 0.6f;
+    ft.color = glm::vec3(0.3f, 1.0f, 0.3f);
+    ft.shadowColor = glm::vec3(0.1f, 0.5f, 0.1f);
+    ft.shadowOffset = glm::vec2(1, -1);
 
     floatingTexts.push_back(ft);
 }
@@ -679,7 +918,7 @@ void update_score_popups(float deltaTime) {
             it = floatingTexts.erase(it);
         }
         else {
-            it->position.y += 40.0f * deltaTime; // rise speed
+            it->position.y += 40.0f * deltaTime;
             ++it;
         }
     }
@@ -701,7 +940,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D Textured Game", nullptr, nullptr);
+    GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D Game with Health System", nullptr, nullptr);
     if (!win) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(win);
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) return -1;
@@ -734,11 +973,10 @@ int main() {
         groundTexture = create_procedural_texture(64, 64, glm::vec3(0.4f, 0.6f, 0.3f), glm::vec3(0.3f, 0.5f, 0.2f));
     }
 
-    // Initialize bullet system
+    // Initialize systems
     init_particle_system();
-
-    // Initialize font rendering
     init_font_rendering();
+    init_health_bar();
 
     // Box2D world
     b2WorldDef worldDef = b2DefaultWorldDef();
@@ -782,67 +1020,70 @@ int main() {
     glm::mat4 proj = glm::ortho(0.0f, float(WINDOW_WIDTH), 0.0f, float(WINDOW_HEIGHT), -1.0f, 1.0f);
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
 
-    // Tells OpenGL to properly handle the alpha channel in your PNGs
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // For tracking time between frames
     float lastTime = glfwGetTime();
 
     while (!glfwWindowShouldClose(win)) {
-        // Calculate delta time
         float currentTime = glfwGetTime();
         float deltaTime = currentTime - lastTime;
         lastTime = currentTime;
 
         process_input(win, player);
-        b2World_Step(g_world, timeStep, 8);
 
-        // Update particles
+        if (!isPlayerDead) {
+            b2World_Step(g_world, timeStep, 8);
+        }
+        else {
+            // Update respawn timer
+            respawnTimer -= deltaTime;
+            if (respawnTimer <= 0.0f) {
+                respawn_player(player);
+            }
+        }
+
+        // Update systems
         update_particles(deltaTime);
-        
-
-        // Update score popups
         update_score_popups(deltaTime);
 
         // --- 1-meter proximity AABB ---
-        AABB playerBox = getAABBWithProximity(player, 1.0f, 1.0f, 1.0f); // 1 meter
-        *(boxUD->color) = g_boxColor; // reset
-        AABB boxAABB = getAABBWithProximity(box, 0.5f, 0.5f, 0.0f); // box normal size
+        if (!isPlayerDead) {
+            AABB playerBox = getAABBWithProximity(player, 1.0f, 1.0f, 1.0f);
+            *(boxUD->color) = g_boxColor;
+            AABB boxAABB = getAABBWithProximity(box, 0.5f, 0.5f, 0.0f);
 
-        bool isPlayerNear = aabbOverlap(playerBox, boxAABB);
-        if (isPlayerNear) {
-            *(boxUD->color) = g_yellowColor;
+            bool isPlayerNear = aabbOverlap(playerBox, boxAABB);
+            if (isPlayerNear) {
+                *(boxUD->color) = g_yellowColor;
 
-            // Add score and spawn popup (only once per collision)
-            if (!wasPlayerNear) {
-                currentScore += 10;
-                b2Vec2 boxPos = b2Body_GetPosition(box);
-                spawn_score_popup(10, glm::vec2(boxPos.x, boxPos.y + 1.0f));
-                std::cout << "Score: " << currentScore << std::endl;
+                if (!wasPlayerNear) {
+                    currentScore += 10;
+                    b2Vec2 boxPos = b2Body_GetPosition(box);
+                    spawn_score_popup(10, glm::vec2(boxPos.x, boxPos.y + 1.0f));
+                    std::cout << "Score: " << currentScore << std::endl;
+                }
+                wasPlayerNear = true;
             }
-            wasPlayerNear = true;
-        }
-        else {
-            wasPlayerNear = false;
-        }
+            else {
+                wasPlayerNear = false;
+            }
 
-        // Update box animation
-        update_box_animation(boxUD, deltaTime, isPlayerNear);
+            update_box_animation(boxUD, deltaTime, isPlayerNear);
 
-        // Auto reset if player falls
-        b2Vec2 ppos = b2Body_GetPosition(player);
-        if (ppos.y < -20.0f) {
-            b2Body_SetTransform(player, { 0.0f,10.0f }, b2MakeRot(0.0f));
-            b2Body_SetLinearVelocity(player, { 0.0f,0.0f });
+            // Auto reset if player falls
+            b2Vec2 ppos = b2Body_GetPosition(player);
+            if (ppos.y < -20.0f) {
+                take_damage(10, player);
+                b2Body_SetTransform(player, { 0.0f,10.0f }, b2MakeRot(0.0f));
+                b2Body_SetLinearVelocity(player, { 0.0f,0.0f });
+            }
         }
 
         // --- Rendering ---
         glClear(GL_COLOR_BUFFER_BIT);
         glUseProgram(g_prog);
         glBindVertexArray(g_vao);
-
-        // Set texture unit
         glUniform1i(g_uTexture, 0);
 
         auto drawBody = [&](b2BodyId b, float w, float h) {
@@ -854,7 +1095,6 @@ int main() {
             model = glm::translate(model, { px,py,0.0f });
             model = glm::rotate(model, angle, { 0,0,1 });
 
-            // Apply animation scale if needed
             UserData* ud = (UserData*)b2Body_GetUserData(b);
             float scale = ud ? ud->animationScale : 1.0f;
             model = glm::scale(model, { w * PIXELS_PER_METER * 2.0f * scale,
@@ -882,8 +1122,18 @@ int main() {
             };
 
         drawBody(ground, 50.0f, 0.1f);
-        drawBody(player, 1.0f, 1.0f);
+        if (!isPlayerDead) {
+            drawBody(player, 1.0f, 1.0f);
+        }
         drawBody(box, 0.5f, 0.5f);
+
+        // Render health bar above player
+        if (!isPlayerDead) {
+            render_world_space_health_bar(player, proj);
+        }
+
+        // Render screen health bar
+        render_screen_health_bar(proj);
 
         // Render particles
         render_particles(proj);
@@ -891,9 +1141,23 @@ int main() {
         // Render score popups
         render_score_popups(proj);
 
-        // Render current score in the corner with pixel font
+        // Render UI text
         render_text("Score:" + std::to_string(currentScore), 20.0f, WINDOW_HEIGHT - 40.0f, 0.8f,
             glm::vec3(1, 1, 1), glm::vec3(0.2f, 0.6f, 1.0f), glm::vec2(2, -2));
+
+        render_text("Health:" + std::to_string(playerHealth) + "/" + std::to_string(maxHealth),
+            20.0f, WINDOW_HEIGHT - 90.0f, 0.6f,
+            glm::vec3(1, 1, 1), glm::vec3(0.2f, 0.6f, 1.0f), glm::vec2(1, -1));
+
+        if (isPlayerDead) {
+            std::string respawnText = "Respawning in " + std::to_string(static_cast<int>(respawnTimer)) + "s";
+            render_text(respawnText, WINDOW_WIDTH / 2 - 150.0f, WINDOW_HEIGHT / 2, 1.0f,
+                glm::vec3(1, 0.3f, 0.3f), glm::vec3(0.5f, 0.1f, 0.1f), glm::vec2(2, -2));
+        }
+
+        // Controls help
+        render_text("H:Damage  J:Heal  X:Explosion", 20.0f, 30.0f, 0.4f,
+            glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
 
         glfwSwapBuffers(win);
         glfwPollEvents();
@@ -905,12 +1169,14 @@ int main() {
     delete boxUD;
     delete groundUD;
 
+    // Cleanup health bar
+    glDeleteVertexArrays(1, &healthBarVAO);
+    glDeleteBuffers(1, &healthBarVBO);
+
     // Cleanup font resources
     glDeleteVertexArrays(1, &fontVAO);
     glDeleteBuffers(1, &fontVBO);
     glDeleteProgram(fontProgram);
-
-    // Cleanup character textures
     for (auto& character : characters) {
         glDeleteTextures(1, &character.second.textureID);
     }
@@ -918,7 +1184,6 @@ int main() {
     glDeleteTextures(1, &playerTexture);
     glDeleteTextures(1, &boxTexture);
     glDeleteTextures(1, &groundTexture);
-   
     glDeleteTextures(1, &g_particleTexture);
 
     b2DestroyWorld(g_world);
