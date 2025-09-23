@@ -35,9 +35,12 @@ GLint g_uMVP;
 GLint g_uColor;
 GLint g_uUseTexture;
 GLint g_uTexture;
+// Add uniform location
+GLint g_uBrightness;
 
 // Global projection matrix
 glm::mat4 proj;
+
 
 // ---------------- GUI State ----------------
 enum GameState { STATE_PLAYING, STATE_PAUSED, STATE_MENU };
@@ -98,6 +101,7 @@ void init_health_bar() {
     glBindVertexArray(0);
 }
 
+
 void render_world_space_health_bar(b2BodyId player, const glm::mat4& proj) {
     if (isPlayerDead) return;
 
@@ -151,54 +155,6 @@ void render_world_space_health_bar(b2BodyId player, const glm::mat4& proj) {
     glDrawArrays(GL_LINE_LOOP, 0, 4);
 }
 
-void render_screen_health_bar(const glm::mat4& proj) {
-    float healthPercent = static_cast<float>(playerHealth) / maxHealth;
-    float healthBarWidth = 200.0f;
-    float healthBarHeight = 20.0f;
-    float posX = 20.0f;
-    float posY = WINDOW_HEIGHT - 60.0f;
-
-    glUseProgram(g_prog);
-    glBindVertexArray(healthBarVAO);
-    glUniform1i(g_uUseTexture, false);
-
-    // Background
-    glm::mat4 model(1.0f);
-    model = glm::translate(model, { posX, posY, 0.0f });
-    model = glm::scale(model, { healthBarWidth, healthBarHeight, 1.0f });
-    glm::mat4 mvp = proj * model;
-    glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
-    glUniform3f(g_uColor, 0.5f, 0.1f, 0.1f);
-    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-
-    // Health
-    model = glm::mat4(1.0f);
-    model = glm::translate(model, { posX, posY, 0.0f });
-    model = glm::scale(model, { healthBarWidth * healthPercent, healthBarHeight, 1.0f });
-    mvp = proj * model;
-    glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
-
-    if (healthPercent > 0.6f) {
-        glUniform3f(g_uColor, 0.2f, 0.8f, 0.2f);
-    }
-    else if (healthPercent > 0.3f) {
-        glUniform3f(g_uColor, 1.0f, 0.8f, 0.2f);
-    }
-    else {
-        glUniform3f(g_uColor, 0.8f, 0.2f, 0.2f);
-    }
-
-    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-
-    // Border
-    model = glm::mat4(1.0f);
-    model = glm::translate(model, { posX, posY, 0.0f });
-    model = glm::scale(model, { healthBarWidth, healthBarHeight, 1.0f });
-    mvp = proj * model;
-    glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
-    glUniform3f(g_uColor, 1.0f, 1.0f, 1.0f);
-    glDrawArrays(GL_LINE_LOOP, 0, 4);
-}
 
 // ---------------- GUI Button System ----------------
 void init_gui_buttons() {
@@ -224,38 +180,67 @@ void init_gui_buttons() {
     glBindVertexArray(0);
 }
 
-GLuint create_procedural_button_texture(int width, int height, const glm::vec3& baseColor, const glm::vec3& highlightColor) {
-    std::vector<unsigned char> data(width * height * 3);
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            int idx = (y * width + x) * 3;
-
-            // Create a button-like appearance with beveled edges
-            bool isBorder = (x < 3 || x >= width - 3 || y < 3 || y >= height - 3);
-            bool isHighlight = (x < width / 2 && y < height / 2);
-
-            glm::vec3 color = isBorder ? glm::vec3(0.3f, 0.3f, 0.3f) :
-                isHighlight ? highlightColor : baseColor;
-
-            data[idx] = static_cast<unsigned char>(color.r * 255);
-            data[idx + 1] = static_cast<unsigned char>(color.g * 255);
-            data[idx + 2] = static_cast<unsigned char>(color.b * 255);
-        }
-    }
+GLuint load_texture_alpha(const char* path, bool flip_vertical = true) {
+    stbi_set_flip_vertically_on_load(flip_vertical);
 
     GLuint textureID;
     glGenTextures(1, &textureID);
-    glBindTexture(GL_TEXTURE_2D, textureID);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data.data());
-    glGenerateMipmap(GL_TEXTURE_2D);
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    int width, height, nrComponents;
+    unsigned char* data = stbi_load(path, &width, &height, &nrComponents, 0);
+    if (data) {
+        GLenum format;
+        if (nrComponents == 1)
+            format = GL_RED;
+        else if (nrComponents == 3)
+            format = GL_RGB;
+        else if (nrComponents == 4)
+            format = GL_RGBA;
+
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        stbi_image_free(data);
+        std::cout << "Loaded texture: " << path << " (" << width << "x" << height << ", " << nrComponents << " components)" << std::endl;
+    }
+    else {
+        std::cout << "Texture failed to load at path: " << path << std::endl;
+        stbi_image_free(data);
+        return 0;
+    }
 
     return textureID;
 }
+
+
+// Font rendering
+struct Character {
+    GLuint textureID;
+    glm::ivec2 size;
+    glm::ivec2 bearing;
+    unsigned int advance;
+};
+
+std::map<char, Character> characters;
+GLuint fontVAO, fontVBO;
+GLuint fontProgram;
+GLint font_uMVP, font_uTextColor, font_uTexture;
+
+void init_font_rendering();
+void render_text(const std::string& text, float x, float y, float scale,
+    const glm::vec3& color, const glm::vec3& shadowColor,
+    const glm::vec2& shadowOffset);
+void spawn_score_popup(int points, const glm::vec2& position);
+void spawn_damage_effect(int damage, const glm::vec2& position);
+void spawn_heal_effect(int amount, const glm::vec2& position);
+void update_score_popups(float deltaTime);
+void render_score_popups(const glm::mat4& proj);
 
 void render_button(float x, float y, float width, float height, GLuint texture, const std::string& text = "", const glm::vec3& color = glm::vec3(1.0f)) {
     glUseProgram(g_prog);
@@ -276,6 +261,12 @@ void render_button(float x, float y, float width, float height, GLuint texture, 
     glUniform3f(g_uColor, color.r, color.g, color.b);
 
     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+    // Render button text if provided
+    if (!text.empty()) {
+        render_text(text, x + width / 2.0f - text.length() * 5.0f, y + height / 2.0f - 8.0f, 0.4f,
+            glm::vec3(1, 1, 1), glm::vec3(0, 0, 0), glm::vec2(1, -1));
+    }
 }
 
 bool is_point_in_rect(float px, float py, float x, float y, float width, float height) {
@@ -319,28 +310,6 @@ std::vector<FloatingText> floatingTexts;
 int currentScore = 0;
 bool wasPlayerNear = false;
 
-// Font rendering
-struct Character {
-    GLuint textureID;
-    glm::ivec2 size;
-    glm::ivec2 bearing;
-    unsigned int advance;
-};
-
-std::map<char, Character> characters;
-GLuint fontVAO, fontVBO;
-GLuint fontProgram;
-GLint font_uMVP, font_uTextColor, font_uTexture;
-
-void init_font_rendering();
-void render_text(const std::string& text, float x, float y, float scale,
-    const glm::vec3& color, const glm::vec3& shadowColor,
-    const glm::vec2& shadowOffset);
-void spawn_score_popup(int points, const glm::vec2& position);
-void spawn_damage_effect(int damage, const glm::vec2& position);
-void spawn_heal_effect(int amount, const glm::vec2& position);
-void update_score_popups(float deltaTime);
-void render_score_popups(const glm::mat4& proj);
 
 // ---------------- Health Management ----------------
 void player_died(b2BodyId player) {
@@ -411,13 +380,16 @@ out vec4 FragColor;
 uniform vec3 uColor;
 uniform sampler2D uTexture;
 uniform bool uUseTexture;
+uniform float uBrightness;  // Add brightness control
 in vec2 TexCoord;
 void main() {
+    vec4 baseColor;
     if (uUseTexture) {
-        FragColor = texture(uTexture, TexCoord) * vec4(uColor, 1.0);
+        baseColor = texture(uTexture, TexCoord) * vec4(uColor, 1.0);
     } else {
-        FragColor = vec4(uColor, 1.0);
+        baseColor = vec4(uColor, 1.0);
     }
+    FragColor = baseColor * uBrightness;  // Apply brightness
 }
 )";
 
@@ -1082,6 +1054,26 @@ void render_score_popups(const glm::mat4& proj) {
     }
 }
 
+void render_pause_overlay(const glm::mat4& proj) {
+    glUseProgram(g_prog);
+    glBindVertexArray(buttonVAO);
+    glUniform1i(g_uUseTexture, false);
+
+    // Semi-transparent dark overlay
+    glm::mat4 overlayModel(1.0f);
+    overlayModel = glm::translate(overlayModel, { WINDOW_WIDTH , WINDOW_HEIGHT , 0.0f });
+    overlayModel = glm::scale(overlayModel, { WINDOW_WIDTH, WINDOW_HEIGHT, 1.0f });
+    glm::mat4 overlayMvp = proj * overlayModel;
+    glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(overlayMvp));
+    glUniform3f(g_uColor, 0.0f, 0.0f, 0.0f);
+    glUniform1f(g_uBrightness, 0.7f);  // 70% brightness (30% darker)
+
+    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+}
+
+void dim_game_components(bool paused) {
+    glUniform1f(g_uBrightness, paused ? 0.8f : 1.0f);  // 60% brightness when paused
+}
 
 
 // ---------------- Main ----------------
@@ -1114,6 +1106,8 @@ int main() {
     g_uColor = glGetUniformLocation(g_prog, "uColor");
     g_uUseTexture = glGetUniformLocation(g_prog, "uUseTexture");
     g_uTexture = glGetUniformLocation(g_prog, "uTexture");
+    g_uBrightness = glGetUniformLocation(g_prog, "uBrightness");
+
 
     // Load textures (or create procedural ones if files not available)
     GLuint playerTexture = load_texture("enemy2.png");
@@ -1131,11 +1125,29 @@ int main() {
         groundTexture = create_procedural_texture(64, 64, glm::vec3(0.4f, 0.6f, 0.3f), glm::vec3(0.3f, 0.5f, 0.2f));
     }
 
-    // Create button textures
-    playButtonTexture = create_procedural_button_texture(64, 64, glm::vec3(0.2f, 0.8f, 0.2f), glm::vec3(0.3f, 0.9f, 0.3f));
-    pauseButtonTexture = create_procedural_button_texture(64, 64, glm::vec3(0.8f, 0.8f, 0.2f), glm::vec3(0.9f, 0.9f, 0.3f));
-    resumeButtonTexture = create_procedural_button_texture(64, 64, glm::vec3(0.2f, 0.5f, 0.8f), glm::vec3(0.3f, 0.6f, 0.9f));
-    quitButtonTexture = create_procedural_button_texture(64, 64, glm::vec3(0.8f, 0.2f, 0.2f), glm::vec3(0.9f, 0.3f, 0.3f));
+    // Load button textures from PNG files
+    playButtonTexture = load_texture_alpha("play_butto2n.png");
+    pauseButtonTexture = load_texture_alpha("pause_butt2on.png");
+    resumeButtonTexture = load_texture("resume_button.png");
+    quitButtonTexture = load_texture_alpha("quit_button2.png");
+
+    // Fallback to procedural textures if PNGs not found
+    if (playButtonTexture == 0) {
+        std::cout << "Creating fallback play button texture" << std::endl;
+        playButtonTexture = create_procedural_texture(64, 64, glm::vec3(0.2f, 0.8f, 0.2f), glm::vec3(0.1f, 0.6f, 0.1f));
+    }
+    if (pauseButtonTexture == 0) {
+        std::cout << "Creating fallback pause button texture" << std::endl;
+        pauseButtonTexture = create_procedural_texture(64, 64, glm::vec3(0.8f, 0.8f, 0.2f), glm::vec3(0.6f, 0.6f, 0.1f));
+    }
+    if (resumeButtonTexture == 0) {
+        std::cout << "Creating fallback resume button texture" << std::endl;
+        resumeButtonTexture = create_procedural_texture(64, 64, glm::vec3(0.2f, 0.5f, 0.8f), glm::vec3(0.1f, 0.3f, 0.6f));
+    }
+    if (quitButtonTexture == 0) {
+        std::cout << "Creating fallback quit button texture" << std::endl;
+        quitButtonTexture = create_procedural_texture(64, 64, glm::vec3(0.8f, 0.2f, 0.2f), glm::vec3(0.6f, 0.1f, 0.1f));
+    }
 
     // Initialize systems
     init_particle_system();
@@ -1196,6 +1208,9 @@ int main() {
         lastTime = currentTime;
 
         process_input(win, player);
+
+        // Apply dimming to all game components when paused
+        dim_game_components(currentGameState == STATE_PAUSED);
 
         // Only update physics and game logic when playing
         if (currentGameState == STATE_PLAYING && !isPlayerDead) {
@@ -1292,13 +1307,14 @@ int main() {
         }
         drawBody(box, 0.5f, 0.5f);
 
+
+        // Reset brightness for UI elements (they should remain bright)
+        glUniform1f(g_uBrightness, 1.0f);
+
         // Render health bar above player
         if (!isPlayerDead) {
             render_world_space_health_bar(player, proj);
         }
-
-        // Render screen health bar
-        render_screen_health_bar(proj);
 
         // Render particles
         render_particles(proj);
@@ -1310,27 +1326,15 @@ int main() {
 
         // Play/Pause button in top-right corner
         if (currentGameState == STATE_PLAYING) {
-            render_button(WINDOW_WIDTH - 60, WINDOW_HEIGHT - 60, 50, 50, pauseButtonTexture, "II");
+            render_button(WINDOW_WIDTH - 60, WINDOW_HEIGHT - 60, 50, 50, pauseButtonTexture, "PAUSE");
         }
         else {
-            render_button(WINDOW_WIDTH - 60, WINDOW_HEIGHT - 60, 50, 50, playButtonTexture, ">");
+            render_button(WINDOW_WIDTH - 60, WINDOW_HEIGHT - 60, 50, 50, playButtonTexture, "PLAY");
         }
 
         // Pause menu
         if (showPauseMenu) {
-            // Semi-transparent overlay
-            glUseProgram(g_prog);
-            glBindVertexArray(buttonVAO);
-            glUniform1i(g_uUseTexture, false);
-
-            glm::mat4 overlayModel(1.0f);
-            overlayModel = glm::translate(overlayModel, { WINDOW_WIDTH / 2.0f, WINDOW_HEIGHT / 2.0f, 0.0f });
-            overlayModel = glm::scale(overlayModel, { WINDOW_WIDTH, WINDOW_HEIGHT, 1.0f });
-            glm::mat4 overlayMvp = proj * overlayModel;
-            glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(overlayMvp));
-            glUniform3f(g_uColor, 0.0f, 0.0f, 0.0f);
-
-            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+            render_pause_overlay(proj);
 
             // Pause menu panel
             float centerX = WINDOW_WIDTH / 2.0f;
@@ -1356,9 +1360,6 @@ int main() {
         render_text("Score:" + std::to_string(currentScore), 20.0f, WINDOW_HEIGHT - 40.0f, 0.8f,
             glm::vec3(1, 1, 1), glm::vec3(0.2f, 0.6f, 1.0f), glm::vec2(2, -2));
 
-        render_text("Health:" + std::to_string(playerHealth) + "/" + std::to_string(maxHealth),
-            20.0f, WINDOW_HEIGHT - 90.0f, 0.6f,
-            glm::vec3(1, 1, 1), glm::vec3(0.2f, 0.6f, 1.0f), glm::vec2(1, -1));
 
         // Game state text
         if (currentGameState == STATE_PAUSED && !showPauseMenu) {
