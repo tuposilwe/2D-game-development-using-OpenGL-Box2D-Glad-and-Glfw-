@@ -1,5 +1,5 @@
 // main.cpp
-// Box2D + OpenGL Game with Textures, 1-meter proximity AABB collision, EBO, and Health Bar
+// Box2D + OpenGL Game with Textures, 1-meter proximity AABB collision, EBO, Health Bar, and GUI
 
 #include <iostream>
 #include <cmath>
@@ -35,6 +35,16 @@ GLint g_uMVP;
 GLint g_uColor;
 GLint g_uUseTexture;
 GLint g_uTexture;
+
+// Global projection matrix
+glm::mat4 proj;
+
+// ---------------- GUI State ----------------
+enum GameState { STATE_PLAYING, STATE_PAUSED, STATE_MENU };
+GameState currentGameState = STATE_PLAYING;
+bool showPauseMenu = false;
+GLuint buttonVAO, buttonVBO;
+GLuint playButtonTexture, pauseButtonTexture, resumeButtonTexture, quitButtonTexture;
 
 enum EntityType { ENTITY_NONE, ENTITY_PLAYER, ENTITY_BOX, ENTITY_GROUND, ENTITY_BULLET };
 
@@ -190,6 +200,88 @@ void render_screen_health_bar(const glm::mat4& proj) {
     glDrawArrays(GL_LINE_LOOP, 0, 4);
 }
 
+// ---------------- GUI Button System ----------------
+void init_gui_buttons() {
+    // Button VAO (simple quad)
+    float vertices[] = {
+        // positions
+        0.0f, 0.0f,
+        1.0f, 0.0f,
+        1.0f, 1.0f,
+        0.0f, 1.0f
+    };
+
+    glGenVertexArrays(1, &buttonVAO);
+    glGenBuffers(1, &buttonVBO);
+
+    glBindVertexArray(buttonVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, buttonVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+
+    glBindVertexArray(0);
+}
+
+GLuint create_procedural_button_texture(int width, int height, const glm::vec3& baseColor, const glm::vec3& highlightColor) {
+    std::vector<unsigned char> data(width * height * 3);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            int idx = (y * width + x) * 3;
+
+            // Create a button-like appearance with beveled edges
+            bool isBorder = (x < 3 || x >= width - 3 || y < 3 || y >= height - 3);
+            bool isHighlight = (x < width / 2 && y < height / 2);
+
+            glm::vec3 color = isBorder ? glm::vec3(0.3f, 0.3f, 0.3f) :
+                isHighlight ? highlightColor : baseColor;
+
+            data[idx] = static_cast<unsigned char>(color.r * 255);
+            data[idx + 1] = static_cast<unsigned char>(color.g * 255);
+            data[idx + 2] = static_cast<unsigned char>(color.b * 255);
+        }
+    }
+
+    GLuint textureID;
+    glGenTextures(1, &textureID);
+    glBindTexture(GL_TEXTURE_2D, textureID);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data.data());
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    return textureID;
+}
+
+void render_button(float x, float y, float width, float height, GLuint texture, const std::string& text = "", const glm::vec3& color = glm::vec3(1.0f)) {
+    glUseProgram(g_prog);
+    glBindVertexArray(buttonVAO);
+    glUniform1i(g_uUseTexture, texture != 0);
+
+    if (texture != 0) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texture);
+    }
+
+    glm::mat4 model(1.0f);
+    model = glm::translate(model, { x + width / 2.0f, y + height / 2.0f, 0.0f });
+    model = glm::scale(model, { width, height, 1.0f });
+
+    glm::mat4 mvp = proj * model;
+    glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
+    glUniform3f(g_uColor, color.r, color.g, color.b);
+
+    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+}
+
+bool is_point_in_rect(float px, float py, float x, float y, float width, float height) {
+    return px >= x && px <= x + width && py >= y && py <= y + height;
+}
+
 // ---------------- Particle System ----------------
 struct Particle {
     glm::vec2 position;
@@ -251,8 +343,6 @@ void update_score_popups(float deltaTime);
 void render_score_popups(const glm::mat4& proj);
 
 // ---------------- Health Management ----------------
-
-// ADD THE MISSING FUNCTION HERE
 void player_died(b2BodyId player) {
     isPlayerDead = true;
     respawnTimer = RESPAWN_TIME;
@@ -290,8 +380,6 @@ void heal(int amount, b2BodyId player) {
     b2Vec2 playerPos = b2Body_GetPosition(player);
     spawn_heal_effect(amount, glm::vec2(playerPos.x, playerPos.y));
 }
-
-
 
 void respawn_player(b2BodyId player) {
     isPlayerDead = false;
@@ -502,7 +590,28 @@ bool aabbOverlap(const AABB& a, const AABB& b) {
 
 // ---------------- Input ----------------
 void process_input(GLFWwindow* win, b2BodyId player) {
-    if (isPlayerDead) return; // No input when dead
+    // ESC key to toggle pause
+    static bool escKeyPressed = false;
+    if (glfwGetKey(win, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+        if (!escKeyPressed) {
+            if (currentGameState == STATE_PLAYING) {
+                currentGameState = STATE_PAUSED;
+                showPauseMenu = true;
+            }
+            else if (currentGameState == STATE_PAUSED) {
+                currentGameState = STATE_PLAYING;
+                showPauseMenu = false;
+            }
+            escKeyPressed = true;
+        }
+    }
+    else {
+        escKeyPressed = false;
+    }
+
+    // Only process game input when playing
+    if (currentGameState != STATE_PLAYING) return;
+    if (isPlayerDead) return;
 
     float moveForce = 20.0f;
     float jumpImpulse = 6.0f;
@@ -552,6 +661,46 @@ void process_input(GLFWwindow* win, b2BodyId player) {
     }
     else {
         jKeyPressed = false;
+    }
+}
+
+// ---------------- Mouse Input ----------------
+void process_mouse_input(GLFWwindow* window, double xpos, double ypos, int button, int action) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+        // Convert to screen coordinates (flip Y)
+        float mouseX = xpos;
+        float mouseY = WINDOW_HEIGHT - ypos;
+
+        // Pause menu buttons
+        if (showPauseMenu) {
+            float centerX = WINDOW_WIDTH / 2.0f;
+            float centerY = WINDOW_HEIGHT / 2.0f;
+            float buttonWidth = 200.0f;
+            float buttonHeight = 50.0f;
+            float buttonSpacing = 60.0f;
+
+            // Resume button
+            if (is_point_in_rect(mouseX, mouseY, centerX - buttonWidth / 2, centerY, buttonWidth, buttonHeight)) {
+                currentGameState = STATE_PLAYING;
+                showPauseMenu = false;
+            }
+            // Quit button
+            else if (is_point_in_rect(mouseX, mouseY, centerX - buttonWidth / 2, centerY - buttonSpacing, buttonWidth, buttonHeight)) {
+                glfwSetWindowShouldClose(window, true);
+            }
+        }
+
+        // Play/Pause button in HUD (top-right corner)
+        if (is_point_in_rect(mouseX, mouseY, WINDOW_WIDTH - 60, WINDOW_HEIGHT - 60, 50, 50)) {
+            if (currentGameState == STATE_PLAYING) {
+                currentGameState = STATE_PAUSED;
+                showPauseMenu = true;
+            }
+            else {
+                currentGameState = STATE_PLAYING;
+                showPauseMenu = false;
+            }
+        }
     }
 }
 
@@ -933,6 +1082,8 @@ void render_score_popups(const glm::mat4& proj) {
     }
 }
 
+
+
 // ---------------- Main ----------------
 int main() {
     if (!glfwInit()) return -1;
@@ -940,11 +1091,18 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D Game with Health System", nullptr, nullptr);
+    GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D Game with Health System and GUI", nullptr, nullptr);
     if (!win) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(win);
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) return -1;
     glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
+
+    // Set up mouse callback
+    glfwSetMouseButtonCallback(win, [](GLFWwindow* window, int button, int action, int mods) {
+        double xpos, ypos;
+        glfwGetCursorPos(window, &xpos, &ypos);
+        process_mouse_input(window, xpos, ypos, button, action);
+        });
 
     GLuint vs = compile_shader(vertex_shader_src, GL_VERTEX_SHADER);
     GLuint fs = compile_shader(fragment_shader_src, GL_FRAGMENT_SHADER);
@@ -973,10 +1131,17 @@ int main() {
         groundTexture = create_procedural_texture(64, 64, glm::vec3(0.4f, 0.6f, 0.3f), glm::vec3(0.3f, 0.5f, 0.2f));
     }
 
+    // Create button textures
+    playButtonTexture = create_procedural_button_texture(64, 64, glm::vec3(0.2f, 0.8f, 0.2f), glm::vec3(0.3f, 0.9f, 0.3f));
+    pauseButtonTexture = create_procedural_button_texture(64, 64, glm::vec3(0.8f, 0.8f, 0.2f), glm::vec3(0.9f, 0.9f, 0.3f));
+    resumeButtonTexture = create_procedural_button_texture(64, 64, glm::vec3(0.2f, 0.5f, 0.8f), glm::vec3(0.3f, 0.6f, 0.9f));
+    quitButtonTexture = create_procedural_button_texture(64, 64, glm::vec3(0.8f, 0.2f, 0.2f), glm::vec3(0.9f, 0.3f, 0.3f));
+
     // Initialize systems
     init_particle_system();
     init_font_rendering();
     init_health_bar();
+    init_gui_buttons();
 
     // Box2D world
     b2WorldDef worldDef = b2DefaultWorldDef();
@@ -1017,7 +1182,7 @@ int main() {
     b2CreatePolygonShape(box, &boxSD, &boxShape);
 
     float timeStep = 1.0f / 60.0f;
-    glm::mat4 proj = glm::ortho(0.0f, float(WINDOW_WIDTH), 0.0f, float(WINDOW_HEIGHT), -1.0f, 1.0f);
+    proj = glm::ortho(0.0f, float(WINDOW_WIDTH), 0.0f, float(WINDOW_HEIGHT), -1.0f, 1.0f);
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
 
     glEnable(GL_BLEND);
@@ -1032,23 +1197,15 @@ int main() {
 
         process_input(win, player);
 
-        if (!isPlayerDead) {
+        // Only update physics and game logic when playing
+        if (currentGameState == STATE_PLAYING && !isPlayerDead) {
             b2World_Step(g_world, timeStep, 8);
-        }
-        else {
-            // Update respawn timer
-            respawnTimer -= deltaTime;
-            if (respawnTimer <= 0.0f) {
-                respawn_player(player);
-            }
-        }
 
-        // Update systems
-        update_particles(deltaTime);
-        update_score_popups(deltaTime);
+            // Update game systems
+            update_particles(deltaTime);
+            update_score_popups(deltaTime);
 
-        // --- 1-meter proximity AABB ---
-        if (!isPlayerDead) {
+            // --- 1-meter proximity AABB ---
             AABB playerBox = getAABBWithProximity(player, 1.0f, 1.0f, 1.0f);
             *(boxUD->color) = g_boxColor;
             AABB boxAABB = getAABBWithProximity(box, 0.5f, 0.5f, 0.0f);
@@ -1079,6 +1236,13 @@ int main() {
                 b2Body_SetLinearVelocity(player, { 0.0f,0.0f });
             }
         }
+        else if (isPlayerDead) {
+            // Still update respawn timer when paused but dead
+            respawnTimer -= deltaTime;
+            if (respawnTimer <= 0.0f) {
+                respawn_player(player);
+            }
+        }
 
         // --- Rendering ---
         glClear(GL_COLOR_BUFFER_BIT);
@@ -1086,6 +1250,7 @@ int main() {
         glBindVertexArray(g_vao);
         glUniform1i(g_uTexture, 0);
 
+        // Always render the game world (but it will be frozen when paused)
         auto drawBody = [&](b2BodyId b, float w, float h) {
             b2Vec2 pos = b2Body_GetPosition(b);
             float angle = b2Rot_GetAngle(b2Body_GetRotation(b));
@@ -1141,13 +1306,65 @@ int main() {
         // Render score popups
         render_score_popups(proj);
 
-        // Render UI text
+        // --- GUI Rendering ---
+
+        // Play/Pause button in top-right corner
+        if (currentGameState == STATE_PLAYING) {
+            render_button(WINDOW_WIDTH - 60, WINDOW_HEIGHT - 60, 50, 50, pauseButtonTexture, "II");
+        }
+        else {
+            render_button(WINDOW_WIDTH - 60, WINDOW_HEIGHT - 60, 50, 50, playButtonTexture, ">");
+        }
+
+        // Pause menu
+        if (showPauseMenu) {
+            // Semi-transparent overlay
+            glUseProgram(g_prog);
+            glBindVertexArray(buttonVAO);
+            glUniform1i(g_uUseTexture, false);
+
+            glm::mat4 overlayModel(1.0f);
+            overlayModel = glm::translate(overlayModel, { WINDOW_WIDTH / 2.0f, WINDOW_HEIGHT / 2.0f, 0.0f });
+            overlayModel = glm::scale(overlayModel, { WINDOW_WIDTH, WINDOW_HEIGHT, 1.0f });
+            glm::mat4 overlayMvp = proj * overlayModel;
+            glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(overlayMvp));
+            glUniform3f(g_uColor, 0.0f, 0.0f, 0.0f);
+
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+            // Pause menu panel
+            float centerX = WINDOW_WIDTH / 2.0f;
+            float centerY = WINDOW_HEIGHT / 2.0f;
+            float panelWidth = 300.0f;
+            float panelHeight = 200.0f;
+
+            // Panel background
+            render_button(centerX - panelWidth / 2, centerY - panelHeight / 2, panelWidth, panelHeight, 0, "", glm::vec3(0.2f, 0.2f, 0.3f));
+
+            // Pause text
+            render_text("GAME PAUSED", centerX - 80, centerY + 60, 0.8f,
+                glm::vec3(1, 1, 1), glm::vec3(0, 0, 0), glm::vec2(2, -2));
+
+            // Resume button
+            render_button(centerX - 100, centerY, 200, 40, resumeButtonTexture, "RESUME");
+
+            // Quit button
+            render_button(centerX - 100, centerY - 60, 200, 40, quitButtonTexture, "QUIT");
+        }
+
+        // UI text (score, health, etc.)
         render_text("Score:" + std::to_string(currentScore), 20.0f, WINDOW_HEIGHT - 40.0f, 0.8f,
             glm::vec3(1, 1, 1), glm::vec3(0.2f, 0.6f, 1.0f), glm::vec2(2, -2));
 
         render_text("Health:" + std::to_string(playerHealth) + "/" + std::to_string(maxHealth),
             20.0f, WINDOW_HEIGHT - 90.0f, 0.6f,
             glm::vec3(1, 1, 1), glm::vec3(0.2f, 0.6f, 1.0f), glm::vec2(1, -1));
+
+        // Game state text
+        if (currentGameState == STATE_PAUSED && !showPauseMenu) {
+            render_text("PAUSED", WINDOW_WIDTH / 2 - 40, WINDOW_HEIGHT / 2, 1.0f,
+                glm::vec3(1, 1, 0), glm::vec3(0.5f, 0.5f, 0), glm::vec2(2, -2));
+        }
 
         if (isPlayerDead) {
             std::string respawnText = "Respawning in " + std::to_string(static_cast<int>(respawnTimer)) + "s";
@@ -1156,7 +1373,7 @@ int main() {
         }
 
         // Controls help
-        render_text("H:Damage  J:Heal  X:Explosion", 20.0f, 30.0f, 0.4f,
+        render_text("ESC:Pause  H:Damage  J:Heal  X:Explosion", 20.0f, 30.0f, 0.4f,
             glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
 
         glfwSwapBuffers(win);
@@ -1172,6 +1389,14 @@ int main() {
     // Cleanup health bar
     glDeleteVertexArrays(1, &healthBarVAO);
     glDeleteBuffers(1, &healthBarVBO);
+
+    // Cleanup GUI
+    glDeleteVertexArrays(1, &buttonVAO);
+    glDeleteBuffers(1, &buttonVBO);
+    glDeleteTextures(1, &playButtonTexture);
+    glDeleteTextures(1, &pauseButtonTexture);
+    glDeleteTextures(1, &resumeButtonTexture);
+    glDeleteTextures(1, &quitButtonTexture);
 
     // Cleanup font resources
     glDeleteVertexArrays(1, &fontVAO);
