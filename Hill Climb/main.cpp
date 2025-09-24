@@ -1,5 +1,5 @@
 // main.cpp
-// Box2D + OpenGL Game with Textures, 1-meter proximity AABB collision, EBO, Health Bar, and GUI
+// Box2D + OpenGL Game with Textures, Camera Follow, 1-meter proximity AABB collision, EBO, Health Bar, and GUI
 
 #include <iostream>
 #include <cmath>
@@ -26,6 +26,19 @@
 const int WINDOW_WIDTH = 800;
 const int WINDOW_HEIGHT = 600;
 const float PIXELS_PER_METER = 50.0f;
+
+// ---------------- Camera System ----------------
+glm::vec2 cameraPosition(0.0f, 0.0f);
+float cameraZoom = 1.0f;
+const float CAMERA_SMOOTHNESS = 5.0f; // Higher = smoother, lower = more responsive
+const float MIN_ZOOM = 0.5f;
+const float MAX_ZOOM = 2.0f;
+
+// Add these variables with other camera variables
+bool middleMousePressed = false;
+double lastMouseX = 0.0, lastMouseY = 0.0;
+const float ZOOM_SENSITIVITY = 0.1f;
+
 
 // Globals
 b2WorldId g_world;
@@ -101,16 +114,25 @@ void init_health_bar() {
     glBindVertexArray(0);
 }
 
+void update_camera(b2BodyId player, float deltaTime) {
+    if (isPlayerDead) return;
 
-void render_world_space_health_bar(b2BodyId player, const glm::mat4& proj) {
+    b2Vec2 playerPos = b2Body_GetPosition(player);
+    glm::vec2 targetPosition(playerPos.x * PIXELS_PER_METER, playerPos.y * PIXELS_PER_METER);
+
+    // Smooth camera follow using linear interpolation
+    cameraPosition = cameraPosition + (targetPosition - cameraPosition) * (CAMERA_SMOOTHNESS * deltaTime);
+}
+
+void render_world_space_health_bar(b2BodyId player, const glm::mat4& viewProj) {
     if (isPlayerDead) return;
 
     b2Vec2 playerPos = b2Body_GetPosition(player);
     float healthPercent = static_cast<float>(playerHealth) / maxHealth;
 
-    // Convert world coordinates to screen coordinates
-    float screenX = playerPos.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f;
-    float screenY = playerPos.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f + 80.0f; // Above player
+    // Use world coordinates (the camera will handle the transformation)
+    float worldX = playerPos.x * PIXELS_PER_METER;
+    float worldY = playerPos.y * PIXELS_PER_METER + 80.0f; // Above player in world space
 
     glUseProgram(g_prog);
     glBindVertexArray(healthBarVAO);
@@ -118,18 +140,18 @@ void render_world_space_health_bar(b2BodyId player, const glm::mat4& proj) {
 
     // Background (empty part)
     glm::mat4 model(1.0f);
-    model = glm::translate(model, { screenX - 40.0f, screenY, 0.0f });
+    model = glm::translate(model, { worldX - 40.0f, worldY, 0.0f });
     model = glm::scale(model, { 80.0f, 8.0f, 1.0f });
-    glm::mat4 mvp = proj * model;
+    glm::mat4 mvp = viewProj * model;
     glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
     glUniform3f(g_uColor, 0.3f, 0.3f, 0.3f);
     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
     // Health (filled part)
     model = glm::mat4(1.0f);
-    model = glm::translate(model, { screenX - 40.0f, screenY, 0.0f });
+    model = glm::translate(model, { worldX - 40.0f, worldY, 0.0f });
     model = glm::scale(model, { 80.0f * healthPercent, 8.0f, 1.0f });
-    mvp = proj * model;
+    mvp = viewProj * model;
     glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
 
     // Color changes based on health level
@@ -147,9 +169,9 @@ void render_world_space_health_bar(b2BodyId player, const glm::mat4& proj) {
 
     // Border
     model = glm::mat4(1.0f);
-    model = glm::translate(model, { screenX - 40.0f, screenY, 0.0f });
+    model = glm::translate(model, { worldX - 40.0f, worldY, 0.0f });
     model = glm::scale(model, { 80.0f, 8.0f, 1.0f });
-    mvp = proj * model;
+    mvp = viewProj * model;
     glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
     glUniform3f(g_uColor, 1.0f, 1.0f, 1.0f);
     glDrawArrays(GL_LINE_LOOP, 0, 4);
@@ -256,6 +278,7 @@ void render_button(float x, float y, float width, float height, GLuint texture, 
     model = glm::translate(model, { x + width / 2.0f, y + height / 2.0f, 0.0f });
     model = glm::scale(model, { width, height, 1.0f });
 
+    // Use the original projection (not viewProj) for UI elements
     glm::mat4 mvp = proj * model;
     glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
     glUniform3f(g_uColor, color.r, color.g, color.b);
@@ -292,7 +315,7 @@ float g_particleSize = 0.2f; // Size in meters
 void init_particle_system();
 void spawn_explosion(const glm::vec2& position);
 void update_particles(float deltaTime);
-void render_particles(const glm::mat4& proj);
+void render_particles(const glm::mat4& viewProj);
 
 // ---------------- Score System with Pixel Font ----------------
 struct FloatingText {
@@ -356,6 +379,9 @@ void respawn_player(b2BodyId player) {
     b2Body_SetGravityScale(player, 1.0f);
     b2Body_SetTransform(player, { 0.0f, 10.0f }, b2MakeRot(0.0f));
     b2Body_SetLinearVelocity(player, { 0.0f, 0.0f });
+
+    // Reset camera to player position
+    cameraPosition = glm::vec2(0.0f, 10.0f * PIXELS_PER_METER);
 
     // Respawn effect
     spawn_explosion(glm::vec2(0.0f, 10.0f));
@@ -561,7 +587,7 @@ bool aabbOverlap(const AABB& a, const AABB& b) {
 }
 
 // ---------------- Input ----------------
-void process_input(GLFWwindow* win, b2BodyId player) {
+void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
     // ESC key to toggle pause
     static bool escKeyPressed = false;
     if (glfwGetKey(win, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
@@ -579,6 +605,14 @@ void process_input(GLFWwindow* win, b2BodyId player) {
     }
     else {
         escKeyPressed = false;
+    }
+
+    // Camera zoom controls
+    if (glfwGetKey(win, GLFW_KEY_EQUAL) == GLFW_PRESS || glfwGetKey(win, GLFW_KEY_KP_ADD) == GLFW_PRESS) {
+        cameraZoom = glm::min(cameraZoom + deltaTime, MAX_ZOOM);
+    }
+    if (glfwGetKey(win, GLFW_KEY_MINUS) == GLFW_PRESS || glfwGetKey(win, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS) {
+        cameraZoom = glm::max(cameraZoom - deltaTime, MIN_ZOOM);
     }
 
     // Only process game input when playing
@@ -672,6 +706,17 @@ void process_mouse_input(GLFWwindow* window, double xpos, double ypos, int butto
                 currentGameState = STATE_PLAYING;
                 showPauseMenu = false;
             }
+        }
+    }
+
+    // ADD THIS: Middle mouse button handling
+    if (button == GLFW_MOUSE_BUTTON_MIDDLE) {
+        if (action == GLFW_PRESS) {
+            middleMousePressed = true;
+            glfwGetCursorPos(window, &lastMouseX, &lastMouseY);
+        }
+        else if (action == GLFW_RELEASE) {
+            middleMousePressed = false;
         }
     }
 }
@@ -793,7 +838,7 @@ void update_particles(float deltaTime) {
     }
 }
 
-void render_particles(const glm::mat4& proj) {
+void render_particles(const glm::mat4& viewProj) {
     glUseProgram(g_prog);
     glBindVertexArray(g_vao);
     glUniform1i(g_uTexture, 0);
@@ -802,16 +847,16 @@ void render_particles(const glm::mat4& proj) {
     glBindTexture(GL_TEXTURE_2D, g_particleTexture);
 
     for (const auto& p : particles) {
-        float px = p.position.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f;
-        float py = p.position.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f;
+        float worldX = p.position.x * PIXELS_PER_METER;
+        float worldY = p.position.y * PIXELS_PER_METER;
 
         glm::mat4 model(1.0f);
-        model = glm::translate(model, { px, py, 0.0f });
+        model = glm::translate(model, { worldX, worldY, 0.0f });
         model = glm::rotate(model, p.rotation, { 0, 0, 1 });
         model = glm::scale(model, { p.size * PIXELS_PER_METER * 2.0f,
                                   p.size * PIXELS_PER_METER * 2.0f, 1.0f });
 
-        glm::mat4 mvp = proj * model;
+        glm::mat4 mvp = viewProj * model;
         glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
 
         // Fade out as particle dies
@@ -1061,7 +1106,7 @@ void render_pause_overlay(const glm::mat4& proj) {
 
     // Semi-transparent dark overlay
     glm::mat4 overlayModel(1.0f);
-    overlayModel = glm::translate(overlayModel, { WINDOW_WIDTH , WINDOW_HEIGHT , 0.0f });
+    overlayModel = glm::translate(overlayModel, { WINDOW_WIDTH / 2.0f, WINDOW_HEIGHT / 2.0f, 0.0f });
     overlayModel = glm::scale(overlayModel, { WINDOW_WIDTH, WINDOW_HEIGHT, 1.0f });
     glm::mat4 overlayMvp = proj * overlayModel;
     glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(overlayMvp));
@@ -1072,9 +1117,29 @@ void render_pause_overlay(const glm::mat4& proj) {
 }
 
 void dim_game_components(bool paused) {
-    glUniform1f(g_uBrightness, paused ? 0.8f : 1.0f);  // 60% brightness when paused
+    glUniform1f(g_uBrightness, paused ? 0.8f : 1.0f);  // 80% brightness when paused
 }
 
+
+
+
+// Add these functions
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    float zoomFactor = 1.0f + (yoffset * ZOOM_SENSITIVITY * 0.5f);
+    cameraZoom *= zoomFactor;
+    cameraZoom = glm::clamp(cameraZoom, MIN_ZOOM, MAX_ZOOM);
+}
+
+void process_mouse_movement(GLFWwindow* window, double xpos, double ypos) {
+    if (middleMousePressed) {
+        double deltaY = lastMouseY - ypos;
+        float zoomFactor = 1.0f + (deltaY * ZOOM_SENSITIVITY * 0.01f);
+        cameraZoom *= zoomFactor;
+        cameraZoom = glm::clamp(cameraZoom, MIN_ZOOM, MAX_ZOOM);
+        lastMouseX = xpos;
+        lastMouseY = ypos;
+    }
+}
 
 // ---------------- Main ----------------
 int main() {
@@ -1083,7 +1148,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D Game with Health System and GUI", nullptr, nullptr);
+    GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D Game with Camera Follow", nullptr, nullptr);
     if (!win) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(win);
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) return -1;
@@ -1091,9 +1156,18 @@ int main() {
 
     // Set up mouse callback
     glfwSetMouseButtonCallback(win, [](GLFWwindow* window, int button, int action, int mods) {
-        double xpos, ypos;
-        glfwGetCursorPos(window, &xpos, &ypos);
-        process_mouse_input(window, xpos, ypos, button, action);
+    
+    double xpos, ypos;
+    
+    glfwGetCursorPos(window, &xpos, &ypos);
+     
+    process_mouse_input(window, xpos, ypos, button, action);
+        });
+
+
+    glfwSetScrollCallback(win, scroll_callback);
+    glfwSetCursorPosCallback(win, [](GLFWwindow* window, double xpos, double ypos) {
+        process_mouse_movement(window, xpos, ypos);
         });
 
     GLuint vs = compile_shader(vertex_shader_src, GL_VERTEX_SHADER);
@@ -1107,7 +1181,6 @@ int main() {
     g_uUseTexture = glGetUniformLocation(g_prog, "uUseTexture");
     g_uTexture = glGetUniformLocation(g_prog, "uTexture");
     g_uBrightness = glGetUniformLocation(g_prog, "uBrightness");
-
 
     // Load textures (or create procedural ones if files not available)
     GLuint playerTexture = load_texture("enemy2.png");
@@ -1207,7 +1280,20 @@ int main() {
         float deltaTime = currentTime - lastTime;
         lastTime = currentTime;
 
-        process_input(win, player);
+        process_input(win, player, deltaTime);
+
+        // Update camera position
+        update_camera(player, deltaTime);
+
+        // Create camera view matrix
+        glm::mat4 view = glm::mat4(1.0f);
+        view = glm::translate(view, glm::vec3(-cameraPosition.x + WINDOW_WIDTH / 2.0f,
+            -cameraPosition.y + WINDOW_HEIGHT / 2.0f, 0.0f));
+        view = glm::scale(view, glm::vec3(cameraZoom, cameraZoom, 1.0f));
+
+        // Projection matrix (screen space)
+        glm::mat4 proj = glm::ortho(0.0f, float(WINDOW_WIDTH), 0.0f, float(WINDOW_HEIGHT), -1.0f, 1.0f);
+        glm::mat4 viewProj = proj * view;
 
         // Apply dimming to all game components when paused
         dim_game_components(currentGameState == STATE_PAUSED);
@@ -1265,14 +1351,17 @@ int main() {
         glBindVertexArray(g_vao);
         glUniform1i(g_uTexture, 0);
 
-        // Always render the game world (but it will be frozen when paused)
+        // Draw function using camera system
         auto drawBody = [&](b2BodyId b, float w, float h) {
             b2Vec2 pos = b2Body_GetPosition(b);
             float angle = b2Rot_GetAngle(b2Body_GetRotation(b));
-            float px = pos.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f;
-            float py = pos.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f;
+
+            // Use world coordinates (camera will handle transformation)
+            float worldX = pos.x * PIXELS_PER_METER;
+            float worldY = pos.y * PIXELS_PER_METER;
+
             glm::mat4 model(1.0f);
-            model = glm::translate(model, { px,py,0.0f });
+            model = glm::translate(model, { worldX, worldY, 0.0f });
             model = glm::rotate(model, angle, { 0,0,1 });
 
             UserData* ud = (UserData*)b2Body_GetUserData(b);
@@ -1280,7 +1369,8 @@ int main() {
             model = glm::scale(model, { w * PIXELS_PER_METER * 2.0f * scale,
                                         h * PIXELS_PER_METER * 2.0f * scale, 1.0f });
 
-            glm::mat4 mvp = proj * model;
+            // Use viewProj for world objects
+            glm::mat4 mvp = viewProj * model;
             glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
 
             if (ud) {
@@ -1301,28 +1391,28 @@ int main() {
             glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
             };
 
+        // Render world objects with camera
         drawBody(ground, 50.0f, 0.1f);
         if (!isPlayerDead) {
             drawBody(player, 1.0f, 1.0f);
         }
         drawBody(box, 0.5f, 0.5f);
 
-
         // Reset brightness for UI elements (they should remain bright)
         glUniform1f(g_uBrightness, 1.0f);
 
-        // Render health bar above player
+        // Render health bar above player (using camera)
         if (!isPlayerDead) {
-            render_world_space_health_bar(player, proj);
+            render_world_space_health_bar(player, viewProj);
         }
 
-        // Render particles
-        render_particles(proj);
+        // Render particles (using camera)
+        render_particles(viewProj);
 
-        // Render score popups
+        // Render score popups (screen space)
         render_score_popups(proj);
 
-        // --- GUI Rendering ---
+        // --- GUI Rendering (screen space) ---
 
         // Play/Pause button in top-right corner
         if (currentGameState == STATE_PLAYING) {
@@ -1356,10 +1446,13 @@ int main() {
             render_button(centerX - 100, centerY - 60, 200, 40, quitButtonTexture, "QUIT");
         }
 
-        // UI text (score, health, etc.)
+        // UI text (score, health, etc.) - screen space
         render_text("Score:" + std::to_string(currentScore), 20.0f, WINDOW_HEIGHT - 40.0f, 0.8f,
             glm::vec3(1, 1, 1), glm::vec3(0.2f, 0.6f, 1.0f), glm::vec2(2, -2));
 
+        // Camera info
+        render_text("Zoom: " + std::to_string(cameraZoom).substr(0, 4) + " (+/- to adjust)", 20.0f, WINDOW_HEIGHT - 80.0f, 0.4f,
+            glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
 
         // Game state text
         if (currentGameState == STATE_PAUSED && !showPauseMenu) {
@@ -1374,7 +1467,8 @@ int main() {
         }
 
         // Controls help
-        render_text("ESC:Pause  H:Damage  J:Heal  X:Explosion", 20.0f, 30.0f, 0.4f,
+        render_text("ESC:Pause  H:Damage  J:Heal  X:Explosion ",
+            20.0f, 30.0f, 0.4f,
             glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
 
         glfwSwapBuffers(win);
