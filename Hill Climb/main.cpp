@@ -402,6 +402,9 @@ bool wasPlayerNear = false;
 
 // ---------------- Health Management ----------------
 void player_died(b2BodyId player) {
+    //play_death_sound();
+    stop_background_music();
+
     isPlayerDead = true;
     respawnTimer = RESPAWN_TIME;
 
@@ -418,6 +421,8 @@ void player_died(b2BodyId player) {
 void take_damage(int damage, b2BodyId player) {
     if (isPlayerDead) return;
 
+    //play_damage_sound();
+
     playerHealth -= damage;
     if (playerHealth < 0) playerHealth = 0;
 
@@ -431,6 +436,8 @@ void take_damage(int damage, b2BodyId player) {
 }
 
 void heal(int amount, b2BodyId player) {
+    //play_heal_sound();
+
     playerHealth += amount;
     if (playerHealth > maxHealth) playerHealth = maxHealth;
 
@@ -440,6 +447,8 @@ void heal(int amount, b2BodyId player) {
 }
 
 void respawn_player(b2BodyId player) {
+    play_background_music();
+
     isPlayerDead = false;
     playerHealth = maxHealth;
     b2Body_SetGravityScale(player, 1.0f);
