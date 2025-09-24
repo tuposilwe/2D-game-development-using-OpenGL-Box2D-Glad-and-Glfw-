@@ -22,6 +22,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb/stb_image.h"
 
+#include <SDL.h>
+#include <SDL_mixer.h>
+
 // ---------------- Settings ----------------
 const int WINDOW_WIDTH = 800;
 const int WINDOW_HEIGHT = 600;
@@ -81,6 +84,69 @@ glm::vec3 g_boxColor(0.2f, 0.5f, 0.8f);
 glm::vec3 g_yellowColor(1.0f, 1.0f, 0.0f);
 glm::vec3 g_groundColor(0.4f, 0.6f, 0.3f);
 glm::vec3 g_bulletColor(1.0f, 0.8f, 0.2f);
+
+// ---------------- Audio System ----------------
+Mix_Music* backgroundMusic = nullptr;
+Mix_Chunk* jumpSound = nullptr;
+Mix_Chunk* explosionSound = nullptr;
+Mix_Chunk* scoreSound = nullptr;
+
+
+bool audioInitialized = false;
+
+bool init_audio() {
+    if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 2048) < 0) {
+        std::cout << "SDL_mixer could not initialize! SDL_mixer Error: " << Mix_GetError() << std::endl;
+        return false;
+    }
+
+    // Load background music
+    backgroundMusic = Mix_LoadMUS("Sunova - Zero.mp3");
+    if (!backgroundMusic) {
+        std::cout << "Failed to load background music! SDL_mixer Error: " << Mix_GetError() << std::endl;
+        // Continue without music, but still try to load sound effects
+    }
+
+    // Load sound effects with fallbacks
+    jumpSound = Mix_LoadWAV("jump.wav");
+    explosionSound = Mix_LoadWAV("bomb.wav");
+    scoreSound = Mix_LoadWAV("score.wav");
+
+    // Set volume levels
+    if (backgroundMusic) Mix_VolumeMusic(15); // 30% volume for music
+    if (jumpSound) Mix_VolumeChunk(jumpSound, 50);
+    if (explosionSound) Mix_VolumeChunk(explosionSound, 70);
+    if (scoreSound) Mix_VolumeChunk(scoreSound, 80);
+
+    audioInitialized = true;
+    std::cout << "Audio system initialized successfully!" << std::endl;
+    return true;
+}
+
+
+void play_background_music() {
+    if (audioInitialized && backgroundMusic) {
+        Mix_PlayMusic(backgroundMusic, -1); // -1 for infinite loop
+    }
+}
+
+void stop_background_music() {
+    if (audioInitialized) {
+        Mix_HaltMusic();
+    }
+}
+
+void play_sound(Mix_Chunk* sound, int loops = 0) {
+    if (audioInitialized && sound) {
+        Mix_PlayChannel(-1, sound, loops); // -1 = use first available channel
+    }
+}
+
+
+// Specific sound functions
+void play_jump_sound() { play_sound(jumpSound); }
+void play_explosion_sound() { play_sound(explosionSound); }
+void play_score_sound() { play_sound(scoreSound); }
 
 // Health system
 int playerHealth = 100;
@@ -625,7 +691,10 @@ void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
     if (glfwGetKey(win, GLFW_KEY_RIGHT) == GLFW_PRESS) b2Body_ApplyForceToCenter(player, { moveForce,0.0f }, true);
     if (glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS) {
         b2Vec2 vel = b2Body_GetLinearVelocity(player);
-        if (fabs(vel.y) < 0.01f) b2Body_ApplyLinearImpulseToCenter(player, { 0.0f,jumpImpulse }, true);
+        if (fabs(vel.y) < 0.01f) {
+            b2Body_ApplyLinearImpulseToCenter(player, { 0.0f,jumpImpulse }, true);
+            play_jump_sound();
+        };
     }
     if (glfwGetKey(win, GLFW_KEY_R) == GLFW_PRESS) {
         b2Body_SetTransform(player, { 0.0f,10.0f }, b2MakeRot(0.0f));
@@ -668,6 +737,38 @@ void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
     else {
         jKeyPressed = false;
     }
+
+    static bool mKeyPressed = false;
+    if (glfwGetKey(win, GLFW_KEY_M) == GLFW_PRESS) {
+        if (!mKeyPressed) {
+            // Toggle music
+            if (Mix_PlayingMusic()) {
+                Mix_PauseMusic();
+            }
+            else {
+                Mix_ResumeMusic();
+            }
+            mKeyPressed = true;
+        }
+    }
+    else {
+        mKeyPressed = false;
+    }
+
+    static bool nKeyPressed = false;
+    if (glfwGetKey(win, GLFW_KEY_N) == GLFW_PRESS) {
+        if (!nKeyPressed) {
+            // Toggle sound effects
+            static bool soundsMuted = false;
+            soundsMuted = !soundsMuted;
+            Mix_Volume(-1, soundsMuted ? 0 : 128); // -1 = all channels
+            nKeyPressed = true;
+        }
+    }
+    else {
+        nKeyPressed = false;
+    }
+
 }
 
 // ---------------- Mouse Input ----------------
@@ -793,6 +894,8 @@ void init_particle_system() {
 }
 
 void spawn_explosion(const glm::vec2& position) {
+    play_explosion_sound();
+
     // Create 10-15 particles for the explosion
     int numParticles = 10 + rand() % 6;
 
@@ -1142,8 +1245,21 @@ void process_mouse_movement(GLFWwindow* window, double xpos, double ypos) {
 }
 
 // ---------------- Main ----------------
-int main() {
+int main(int argc, char* argv[]) {
     if (!glfwInit()) return -1;
+
+    // Initialize SDL_mixer (must be after GLFW init)
+    if (SDL_Init(SDL_INIT_AUDIO) < 0) {
+        std::cout << "SDL could not initialize! SDL Error: " << SDL_GetError() << std::endl;
+    }
+
+    // Initialize audio system
+    init_audio();
+
+    // Start background music
+    play_background_music();
+
+
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -1317,6 +1433,8 @@ int main() {
 
                 if (!wasPlayerNear) {
                     currentScore += 10;
+                    play_score_sound();
+
                     b2Vec2 boxPos = b2Body_GetPosition(box);
                     spawn_score_popup(10, glm::vec2(boxPos.x, boxPos.y + 1.0f));
                     std::cout << "Score: " << currentScore << std::endl;
@@ -1505,6 +1623,23 @@ int main() {
     glDeleteTextures(1, &boxTexture);
     glDeleteTextures(1, &groundTexture);
     glDeleteTextures(1, &g_particleTexture);
+
+    // Cleanup audio
+    if (audioInitialized) {
+        Mix_HaltMusic();
+        Mix_HaltChannel(-1); // Stop all channels
+
+        if (backgroundMusic) Mix_FreeMusic(backgroundMusic);
+        if (jumpSound) Mix_FreeChunk(jumpSound);
+        if (explosionSound) Mix_FreeChunk(explosionSound);
+       /* if (damageSound) Mix_FreeChunk(damageSound);
+        if (healSound) Mix_FreeChunk(healSound);*/
+        if (scoreSound) Mix_FreeChunk(scoreSound);
+        //if (deathSound) Mix_FreeChunk(deathSound);
+
+        Mix_CloseAudio();
+        SDL_Quit();
+    }
 
     b2DestroyWorld(g_world);
     glfwTerminate();
