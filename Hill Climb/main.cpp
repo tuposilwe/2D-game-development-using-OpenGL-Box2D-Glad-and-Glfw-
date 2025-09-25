@@ -154,6 +154,19 @@ void play_sound(Mix_Chunk* sound, int loops = 0) {
     }
 }
 
+void pause_background_music() {
+    if (audioInitialized && Mix_PlayingMusic()) {
+        Mix_PauseMusic();
+    }
+}
+
+void resume_background_music() {
+    if (audioInitialized && Mix_PausedMusic()) {
+        Mix_ResumeMusic();
+    }
+}
+
+
 // Specific sound functions
 void play_jump_sound() { play_sound(jumpSound); }
 void play_explosion_sound() { play_sound(explosionSound); }
@@ -1518,6 +1531,15 @@ int main(int argc, char* argv[]) {
         lastTime = currentTime;
 
         process_input(win, player, deltaTime);
+
+        // toggles pause/resume
+        if (currentGameState == STATE_PAUSED) {
+            pause_background_music();
+        }
+        else if (currentGameState == STATE_PLAYING) {
+            resume_background_music();
+        }
+
 
         // Update camera position
         update_camera(player, deltaTime);
