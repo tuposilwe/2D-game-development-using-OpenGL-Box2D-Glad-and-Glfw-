@@ -1,6 +1,10 @@
 // main.cpp
 // Box2D + OpenGL Game with Textures, Camera Follow, 1-meter proximity AABB collision, EBO, Health Bar, and GUI
 
+#define _CRT_SECURE_NO_WARNINGS
+#include <stdio.h>
+
+
 #include <iostream>
 #include <cmath>
 #include <vector>
@@ -25,6 +29,14 @@
 
 #include <SDL.h>
 #include <SDL_mixer.h>
+
+
+// ---------------- High Score System ----------------
+int highScore = 0;
+const char* HIGH_SCORE_FILE = "highscore.dat";
+bool newHighScore = false;
+
+
 
 // ---------------- Settings ----------------
 const int WINDOW_WIDTH = 800;
@@ -104,6 +116,7 @@ Mix_Music* backgroundMusic = nullptr;
 Mix_Chunk* jumpSound = nullptr;
 Mix_Chunk* explosionSound = nullptr;
 Mix_Chunk* scoreSound = nullptr;
+Mix_Chunk* highScoreSound = nullptr;
 
 bool audioInitialized = false;
 
@@ -124,12 +137,14 @@ bool init_audio() {
     jumpSound = Mix_LoadWAV("jump.wav");
     explosionSound = Mix_LoadWAV("bomb.wav");
     scoreSound = Mix_LoadWAV("score.wav");
+    highScoreSound = Mix_LoadWAV("highscore.wav");
 
     // Set volume levels
     if (backgroundMusic) Mix_VolumeMusic(15); // 30% volume for music
     if (jumpSound) Mix_VolumeChunk(jumpSound, 50);
     if (explosionSound) Mix_VolumeChunk(explosionSound, 70);
     if (scoreSound) Mix_VolumeChunk(scoreSound, 80);
+    if (highScoreSound) Mix_VolumeChunk(highScoreSound, 100); // Loud for celebration
 
     audioInitialized = true;
     std::cout << "Audio system initialized successfully!" << std::endl;
@@ -167,10 +182,16 @@ void resume_background_music() {
 }
 
 
+
+
+
 // Specific sound functions
 void play_jump_sound() { play_sound(jumpSound); }
 void play_explosion_sound() { play_sound(explosionSound); }
 void play_score_sound() { play_sound(scoreSound); }
+void play_high_score_sound() {
+    play_sound(highScoreSound);
+}
 
 // Health system
 int playerHealth = 100;
@@ -1372,6 +1393,71 @@ void process_mouse_movement(GLFWwindow* window, double xpos, double ypos) {
     }
 }
 
+
+// ---------------- High Score Functions ----------------
+void save_high_score() {
+    FILE* file = fopen(HIGH_SCORE_FILE, "wb");
+    if (file) {
+        fwrite(&highScore, sizeof(int), 1, file);
+        fclose(file);
+        std::cout << "High score saved: " << highScore << std::endl;
+    }
+    else {
+        std::cout << "Failed to save high score!" << std::endl;
+    }
+}
+
+void load_high_score() {
+    FILE* file = fopen(HIGH_SCORE_FILE, "rb");
+    if (file) {
+        fread(&highScore, sizeof(int), 1, file);
+        fclose(file);
+        std::cout << "High score loaded: " << highScore << std::endl;
+    }
+    else {
+        // First time playing - create file with 0 high score
+        highScore = 0;
+        save_high_score();
+        std::cout << "Created new high score file" << std::endl;
+    }
+}
+
+void check_high_score() {
+    if (currentScore > highScore) {
+        highScore = currentScore;
+        newHighScore = true;
+        save_high_score();
+         
+        std::cout << "NEW HIGH SCORE! " << highScore << std::endl;
+    }
+    else {
+        newHighScore = false;
+    }
+}
+
+void spawn_high_score_celebration(b2BodyId player) {
+    // Big explosion effect
+    b2Vec2 playerPos = b2Body_GetPosition(player);
+    for (int i = 0; i < 3; i++) {
+        spawn_explosion(glm::vec2(playerPos.x + (i - 1) * 2.0f, playerPos.y + 2.0f));
+    }
+
+    // Special floating text
+    FloatingText ft;
+    ft.text = "NEW HIGH SCORE!";
+    ft.position = glm::vec2(playerPos.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f,
+        playerPos.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f + 100.0f);
+    ft.life = 3.0f;
+    ft.duration = 3.0f;
+    ft.scale = 0.8f;
+    ft.color = glm::vec3(1.0f, 1.0f, 0.0f); // Gold color
+    ft.shadowColor = glm::vec3(0.5f, 0.5f, 0.0f);
+    ft.shadowOffset = glm::vec2(2, -2);
+
+    floatingTexts.push_back(ft);
+}
+
+
 // ---------------- Main ----------------
 int main(int argc, char* argv[]) {
     if (!glfwInit()) return -1;
@@ -1383,6 +1469,9 @@ int main(int argc, char* argv[]) {
 
     // Initialize audio system
     init_audio();
+
+    // Initialize high score system (ADD THIS)
+    load_high_score();
 
     // Start background music
     play_background_music();
@@ -1579,9 +1668,19 @@ int main(int argc, char* argv[]) {
                     currentScore += 10;
                     play_score_sound();
 
+                    // Check for new high score
+                    check_high_score();
+
                     b2Vec2 boxPos = b2Body_GetPosition(box);
                     spawn_score_popup(10, glm::vec2(boxPos.x, boxPos.y + 1.0f));
-                    std::cout << "Score: " << currentScore << std::endl;
+
+                    if (newHighScore) {
+                        // Special effect for new high score
+                        spawn_high_score_celebration(player);
+                        play_high_score_sound();
+                    }
+
+                    std::cout << "Score: " << currentScore << " | High Score: " << highScore << std::endl;
                 }
                 wasPlayerNear = true;
             }
@@ -1703,34 +1802,62 @@ int main(int argc, char* argv[]) {
             // Pause menu panel
             float centerX = WINDOW_WIDTH / 2.0f;
             float centerY = WINDOW_HEIGHT / 2.0f;
-            float panelWidth = 300.0f;
-            float panelHeight = 200.0f;
+            float panelWidth = 350.0f;  // Increased width for high score display
+            float panelHeight = 280.0f; // Increased height
 
             // Panel background
-            render_button(centerX - panelWidth / 2, centerY - panelHeight / 2, panelWidth, panelHeight, 0, "", glm::vec3(0.2f, 0.2f, 0.3f));
+            render_button(centerX - panelWidth / 2, centerY - panelHeight / 2,
+                panelWidth, panelHeight, 0, "", glm::vec3(0.2f, 0.2f, 0.3f));
 
             // Pause text
-            render_text("GAME PAUSED", centerX - 80, centerY + 60, 0.8f,
+            render_text("GAME PAUSED", centerX - 80, centerY + 80, 0.8f,
                 glm::vec3(1, 1, 1), glm::vec3(0, 0, 0), glm::vec2(2, -2));
 
+            // Current score display
+            //render_text("Current Score: " + std::to_string(currentScore),
+            //    centerX - 120, centerY + 40, 0.5f,
+            //    glm::vec3(1, 1, 1), glm::vec3(0, 0, 0), glm::vec2(1, -1));
+
+            //// High score display with special highlighting if it's new
+            //glm::vec3 highScoreColor = newHighScore ? glm::vec3(1, 1, 0) : glm::vec3(0, 1, 1);
+            //glm::vec3 highScoreShadow = newHighScore ? glm::vec3(0.5f, 0.5f, 0) : glm::vec3(0, 0.5f, 0.5f);
+
+            //std::string highScoreText = "High Score: " + std::to_string(highScore);
+            //if (newHighScore) {
+            //    highScoreText += " - NEW RECORD!";
+            //}
+
+          /*  render_text(highScoreText, centerX - 140, centerY + 10, 0.6f,
+                highScoreColor, highScoreShadow, glm::vec2(1, -1));*/
+
             // Resume button
-            render_button(centerX - 100, centerY, 200, 40, resumeButtonTexture, "RESUME");
+            render_button(centerX - 100, centerY - 20, 200, 40, resumeButtonTexture, "RESUME");
 
             // Quit button
-            render_button(centerX - 100, centerY - 60, 200, 40, quitButtonTexture, "QUIT");
+            render_button(centerX - 100, centerY - 80, 200, 40, quitButtonTexture, "QUIT");
+
+            // Game info footer
+            render_text("Press ESC to resume", centerX - 80, centerY - 130, 0.4f,
+                glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
         }
 
-        // UI text (score, health, etc.) - screen space
+        // Current score
         render_text("Score:" + std::to_string(currentScore), 20.0f, WINDOW_HEIGHT - 40.0f, 0.8f,
             glm::vec3(1, 1, 1), glm::vec3(0.2f, 0.6f, 1.0f), glm::vec2(2, -2));
 
-        // Platform count info
-        render_text("Platforms: " + std::to_string(platforms.size()), 20.0f, WINDOW_HEIGHT - 70.0f, 0.5f,
-            glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
+        // High score (added this)
+        std::string hsText = "High: " + std::to_string(highScore);
+        glm::vec3 hsColor = newHighScore ? glm::vec3(1, 1, 0) : glm::vec3(0.8f, 0.8f, 1.0f);
+        render_text(hsText, 20.0f, WINDOW_HEIGHT - 70.0f, 0.6f,
+            hsColor, glm::vec3(0.2f, 0.2f, 0.4f), glm::vec2(1, -1));
 
-        // Camera info
-        render_text("Zoom: " + std::to_string(cameraZoom).substr(0, 4) + " (+/- to adjust)", 20.0f, WINDOW_HEIGHT - 90.0f, 0.4f,
-            glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
+        // Platform count info (moved down)
+        //render_text("Platforms: " + std::to_string(platforms.size()), 20.0f, WINDOW_HEIGHT - 95.0f, 0.5f,
+        //    glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
+
+        //// Camera info
+        //render_text("Zoom: " + std::to_string(cameraZoom).substr(0, 4) + " (+/- to adjust)", 20.0f, WINDOW_HEIGHT - 90.0f, 0.4f,
+        //    glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
 
         // Game state text
         if (currentGameState == STATE_PAUSED && !showPauseMenu) {
@@ -1742,6 +1869,16 @@ int main(int argc, char* argv[]) {
             std::string respawnText = "Respawning in " + std::to_string(static_cast<int>(respawnTimer)) + "s";
             render_text(respawnText, WINDOW_WIDTH / 2 - 150.0f, WINDOW_HEIGHT / 2, 1.0f,
                 glm::vec3(1, 0.3f, 0.3f), glm::vec3(0.5f, 0.1f, 0.1f), glm::vec2(2, -2));
+
+            //// Show final score and high score when dead
+            //std::string finalScoreText = "Final Score: " + std::to_string(currentScore);
+            //render_text(finalScoreText, WINDOW_WIDTH / 2 - 100.0f, WINDOW_HEIGHT / 2 - 50.0f, 0.7f,
+            //    glm::vec3(1, 1, 1), glm::vec3(0, 0, 0), glm::vec2(1, -1));
+
+            //if (newHighScore) {
+            //    render_text("NEW HIGH SCORE!", WINDOW_WIDTH / 2 - 120.0f, WINDOW_HEIGHT / 2 - 90.0f, 0.8f,
+            //        glm::vec3(1, 1, 0), glm::vec3(0.5f, 0.5f, 0), glm::vec2(2, -2));
+            //}
         }
 
         // Controls help
@@ -1800,6 +1937,7 @@ int main(int argc, char* argv[]) {
         if (jumpSound) Mix_FreeChunk(jumpSound);
         if (explosionSound) Mix_FreeChunk(explosionSound);
         if (scoreSound) Mix_FreeChunk(scoreSound);
+        if (highScoreSound) Mix_FreeChunk(highScoreSound);
 
         Mix_CloseAudio();
         SDL_Quit();
