@@ -7,6 +7,7 @@
 #include <cstdlib> // For rand()
 #include <map>
 #include <string>
+#include <algorithm>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -30,6 +31,20 @@ const int WINDOW_WIDTH = 800;
 const int WINDOW_HEIGHT = 600;
 const float PIXELS_PER_METER = 50.0f;
 
+// ---------------- Platform System ----------------
+std::vector<b2BodyId> platforms;
+const int NUM_PLATFORMS = 15;
+const float PLATFORM_WIDTH = 4.0f;
+const float PLATFORM_HEIGHT = 0.5f;
+const float MIN_PLATFORM_Y = -2.0f;
+const float MAX_PLATFORM_Y = 12.0f;
+const float PLATFORM_SPAWN_DISTANCE = 25.0f;
+const float PLATFORM_DESPAWN_DISTANCE = -10.0f;
+const float MIN_PLATFORM_GAP = 1.0f;
+const float MAX_PLATFORM_GAP = 4.0f;
+const float MIN_PLATFORM_HEIGHT_CHANGE = -2.0f;
+const float MAX_PLATFORM_HEIGHT_CHANGE = 3.0f;
+
 // ---------------- Camera System ----------------
 glm::vec2 cameraPosition(0.0f, 0.0f);
 float cameraZoom = 1.0f;
@@ -41,7 +56,6 @@ const float MAX_ZOOM = 2.0f;
 bool middleMousePressed = false;
 double lastMouseX = 0.0, lastMouseY = 0.0;
 const float ZOOM_SENSITIVITY = 0.1f;
-
 
 // Globals
 b2WorldId g_world;
@@ -57,7 +71,6 @@ GLint g_uBrightness;
 // Global projection matrix
 glm::mat4 proj;
 
-
 // ---------------- GUI State ----------------
 enum GameState { STATE_PLAYING, STATE_PAUSED, STATE_MENU };
 GameState currentGameState = STATE_PLAYING;
@@ -65,7 +78,7 @@ bool showPauseMenu = false;
 GLuint buttonVAO, buttonVBO;
 GLuint playButtonTexture, pauseButtonTexture, resumeButtonTexture, quitButtonTexture;
 
-enum EntityType { ENTITY_NONE, ENTITY_PLAYER, ENTITY_BOX, ENTITY_GROUND, ENTITY_BULLET };
+enum EntityType { ENTITY_NONE, ENTITY_PLAYER, ENTITY_BOX, ENTITY_GROUND, ENTITY_BULLET, ENTITY_PLATFORM };
 
 struct UserData {
     EntityType type;
@@ -84,13 +97,13 @@ glm::vec3 g_boxColor(0.2f, 0.5f, 0.8f);
 glm::vec3 g_yellowColor(1.0f, 1.0f, 0.0f);
 glm::vec3 g_groundColor(0.4f, 0.6f, 0.3f);
 glm::vec3 g_bulletColor(1.0f, 0.8f, 0.2f);
+glm::vec3 g_platformColor(0.3f, 0.7f, 0.4f);
 
 // ---------------- Audio System ----------------
 Mix_Music* backgroundMusic = nullptr;
 Mix_Chunk* jumpSound = nullptr;
 Mix_Chunk* explosionSound = nullptr;
 Mix_Chunk* scoreSound = nullptr;
-
 
 bool audioInitialized = false;
 
@@ -123,7 +136,6 @@ bool init_audio() {
     return true;
 }
 
-
 void play_background_music() {
     if (audioInitialized && backgroundMusic) {
         Mix_PlayMusic(backgroundMusic, -1); // -1 for infinite loop
@@ -141,7 +153,6 @@ void play_sound(Mix_Chunk* sound, int loops = 0) {
         Mix_PlayChannel(-1, sound, loops); // -1 = use first available channel
     }
 }
-
 
 // Specific sound functions
 void play_jump_sound() { play_sound(jumpSound); }
@@ -188,6 +199,9 @@ void update_camera(b2BodyId player, float deltaTime) {
 
     // Smooth camera follow using linear interpolation
     cameraPosition = cameraPosition + (targetPosition - cameraPosition) * (CAMERA_SMOOTHNESS * deltaTime);
+
+    // Keep camera within reasonable vertical bounds
+    cameraPosition.y = glm::max(cameraPosition.y, 100.0f); // Don't go too low
 }
 
 void render_world_space_health_bar(b2BodyId player, const glm::mat4& viewProj) {
@@ -242,7 +256,6 @@ void render_world_space_health_bar(b2BodyId player, const glm::mat4& viewProj) {
     glUniform3f(g_uColor, 1.0f, 1.0f, 1.0f);
     glDrawArrays(GL_LINE_LOOP, 0, 4);
 }
-
 
 // ---------------- GUI Button System ----------------
 void init_gui_buttons() {
@@ -305,7 +318,6 @@ GLuint load_texture_alpha(const char* path, bool flip_vertical = true) {
 
     return textureID;
 }
-
 
 // Font rendering
 struct Character {
@@ -399,10 +411,94 @@ std::vector<FloatingText> floatingTexts;
 int currentScore = 0;
 bool wasPlayerNear = false;
 
+// ---------------- Platform System Functions ----------------
+void generate_initial_platforms() {
+    platforms.clear();
+
+    float startX = -15.0f;
+    float currentY = 0.0f;
+
+    // Create initial platforms leading up to the player start position
+    for (int i = 0; i < NUM_PLATFORMS; i++) {
+        b2BodyDef platformDef = b2DefaultBodyDef();
+        platformDef.type = b2_staticBody;
+        platformDef.position = { startX + i * (PLATFORM_WIDTH + 2.0f), currentY };
+        b2BodyId platform = b2CreateBody(g_world, &platformDef);
+
+        b2Polygon platformShape = b2MakeBox(PLATFORM_WIDTH / 2, PLATFORM_HEIGHT / 2);
+        b2ShapeDef platformSD = b2DefaultShapeDef();
+        b2CreatePolygonShape(platform, &platformSD, &platformShape);
+
+        UserData* platformUD = new UserData{ ENTITY_PLATFORM, &g_platformColor, 0, false, 0.0f, false, 1.0f };
+        b2Body_SetUserData(platform, platformUD);
+
+        platforms.push_back(platform);
+
+        // Add some vertical variation after the first few platforms
+        if (i > 3) {
+            currentY += (rand() % 3) - 1; // -1, 0, or 1
+            currentY = glm::clamp(currentY, MIN_PLATFORM_Y, MAX_PLATFORM_Y);
+        }
+    }
+}
+
+void update_platforms(b2BodyId player) {
+    if (isPlayerDead) return;
+
+    b2Vec2 playerPos = b2Body_GetPosition(player);
+
+    // Remove platforms that are too far behind the player
+    auto it = platforms.begin();
+    while (it != platforms.end()) {
+        b2Vec2 platformPos = b2Body_GetPosition(*it);
+        if (platformPos.x < playerPos.x + PLATFORM_DESPAWN_DISTANCE) {
+            b2DestroyBody(*it);
+            it = platforms.erase(it);
+        }
+        else {
+            ++it;
+        }
+    }
+
+    // Add new platforms if needed
+    if (!platforms.empty()) {
+        b2Vec2 lastPlatformPos = b2Body_GetPosition(platforms.back());
+
+        if (lastPlatformPos.x < playerPos.x + PLATFORM_SPAWN_DISTANCE) {
+            float newX = lastPlatformPos.x + PLATFORM_WIDTH +
+                MIN_PLATFORM_GAP +
+                (rand() % static_cast<int>((MAX_PLATFORM_GAP - MIN_PLATFORM_GAP) * 10)) / 10.0f;
+
+            float newY = lastPlatformPos.y +
+                MIN_PLATFORM_HEIGHT_CHANGE +
+                (rand() % static_cast<int>((MAX_PLATFORM_HEIGHT_CHANGE - MIN_PLATFORM_HEIGHT_CHANGE) * 10)) / 10.0f;
+
+            newY = glm::clamp(newY, MIN_PLATFORM_Y, MAX_PLATFORM_Y);
+
+            // Ensure platforms don't get too high or too low relative to player
+            if (fabs(newY - playerPos.y) > 8.0f) {
+                newY = playerPos.y + (rand() % 3) - 1; // Keep near player height
+            }
+
+            b2BodyDef platformDef = b2DefaultBodyDef();
+            platformDef.type = b2_staticBody;
+            platformDef.position = { newX, newY };
+            b2BodyId newPlatform = b2CreateBody(g_world, &platformDef);
+
+            b2Polygon platformShape = b2MakeBox(PLATFORM_WIDTH / 2, PLATFORM_HEIGHT / 2);
+            b2ShapeDef platformSD = b2DefaultShapeDef();
+            b2CreatePolygonShape(newPlatform, &platformSD, &platformShape);
+
+            UserData* platformUD = new UserData{ ENTITY_PLATFORM, &g_platformColor, 0, false, 0.0f, false, 1.0f };
+            b2Body_SetUserData(newPlatform, platformUD);
+
+            platforms.push_back(newPlatform);
+        }
+    }
+}
 
 // ---------------- Health Management ----------------
 void player_died(b2BodyId player) {
-    //play_death_sound();
     stop_background_music();
 
     isPlayerDead = true;
@@ -414,14 +510,12 @@ void player_died(b2BodyId player) {
     b2Vec2 playerPos = b2Body_GetPosition(player);
     spawn_explosion(glm::vec2(playerPos.x, playerPos.y));
 
-    // Make player fall through ground
+    // Make player fall through platforms
     b2Body_SetGravityScale(player, 2.0f);
 }
 
 void take_damage(int damage, b2BodyId player) {
     if (isPlayerDead) return;
-
-    //play_damage_sound();
 
     playerHealth -= damage;
     if (playerHealth < 0) playerHealth = 0;
@@ -436,8 +530,6 @@ void take_damage(int damage, b2BodyId player) {
 }
 
 void heal(int amount, b2BodyId player) {
-    //play_heal_sound();
-
     playerHealth += amount;
     if (playerHealth > maxHealth) playerHealth = maxHealth;
 
@@ -452,14 +544,24 @@ void respawn_player(b2BodyId player) {
     isPlayerDead = false;
     playerHealth = maxHealth;
     b2Body_SetGravityScale(player, 1.0f);
-    b2Body_SetTransform(player, { 0.0f, 10.0f }, b2MakeRot(0.0f));
+
+    // Find a safe spawn position (on the first platform)
+    float spawnX = -10.0f;
+    float spawnY = 2.0f;
+    if (!platforms.empty()) {
+        b2Vec2 platformPos = b2Body_GetPosition(platforms[0]);
+        spawnX = platformPos.x;
+        spawnY = platformPos.y + PLATFORM_HEIGHT + 1.0f;
+    }
+
+    b2Body_SetTransform(player, { spawnX, spawnY }, b2MakeRot(0.0f));
     b2Body_SetLinearVelocity(player, { 0.0f, 0.0f });
 
     // Reset camera to player position
-    cameraPosition = glm::vec2(0.0f, 10.0f * PIXELS_PER_METER);
+    cameraPosition = glm::vec2(spawnX * PIXELS_PER_METER, spawnY * PIXELS_PER_METER);
 
     // Respawn effect
-    spawn_explosion(glm::vec2(0.0f, 10.0f));
+    spawn_explosion(glm::vec2(spawnX, spawnY));
 }
 
 // ---------------- Shaders ----------------
@@ -706,7 +808,15 @@ void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
         };
     }
     if (glfwGetKey(win, GLFW_KEY_R) == GLFW_PRESS) {
-        b2Body_SetTransform(player, { 0.0f,10.0f }, b2MakeRot(0.0f));
+        // Reset player to a safe position
+        float spawnX = -10.0f;
+        float spawnY = 5.0f;
+        if (!platforms.empty()) {
+            b2Vec2 platformPos = b2Body_GetPosition(platforms[0]);
+            spawnX = platformPos.x;
+            spawnY = platformPos.y + PLATFORM_HEIGHT + 1.0f;
+        }
+        b2Body_SetTransform(player, { spawnX, spawnY }, b2MakeRot(0.0f));
         b2Body_SetLinearVelocity(player, { 0.0f,0.0f });
     }
 
@@ -777,7 +887,6 @@ void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
     else {
         nKeyPressed = false;
     }
-
 }
 
 // ---------------- Mouse Input ----------------
@@ -1232,9 +1341,6 @@ void dim_game_components(bool paused) {
     glUniform1f(g_uBrightness, paused ? 0.8f : 1.0f);  // 80% brightness when paused
 }
 
-
-
-
 // Add these functions
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
     float zoomFactor = 1.0f + (yoffset * ZOOM_SENSITIVITY * 0.5f);
@@ -1268,12 +1374,11 @@ int main(int argc, char* argv[]) {
     // Start background music
     play_background_music();
 
-
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D Game with Camera Follow", nullptr, nullptr);
+    GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D Platformer with Infinite Platforms", nullptr, nullptr);
     if (!win) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(win);
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) return -1;
@@ -1281,14 +1386,10 @@ int main(int argc, char* argv[]) {
 
     // Set up mouse callback
     glfwSetMouseButtonCallback(win, [](GLFWwindow* window, int button, int action, int mods) {
-    
-    double xpos, ypos;
-    
-    glfwGetCursorPos(window, &xpos, &ypos);
-     
-    process_mouse_input(window, xpos, ypos, button, action);
+        double xpos, ypos;
+        glfwGetCursorPos(window, &xpos, &ypos);
+        process_mouse_input(window, xpos, ypos, button, action);
         });
-
 
     glfwSetScrollCallback(win, scroll_callback);
     glfwSetCursorPosCallback(win, [](GLFWwindow* window, double xpos, double ypos) {
@@ -1358,21 +1459,23 @@ int main(int argc, char* argv[]) {
     worldDef.gravity = { 0.0f,-10.0f };
     g_world = b2CreateWorld(&worldDef);
 
-    // Ground
-    b2BodyDef groundDef = b2DefaultBodyDef();
-    groundDef.type = b2_staticBody;
-    groundDef.position = { 0.0f,-5.0f };
-    b2BodyId ground = b2CreateBody(g_world, &groundDef);
-    UserData* groundUD = new UserData{ ENTITY_GROUND, &g_groundColor, groundTexture, true, 0.0f, false, 1.0f };
-    b2Body_SetUserData(ground, groundUD);
-    b2Polygon groundShape = b2MakeBox(50.0f, 0.1f);
-    b2ShapeDef groundSD = b2DefaultShapeDef();
-    b2CreatePolygonShape(ground, &groundSD, &groundShape);
+    // Generate initial platforms
+    generate_initial_platforms();
 
-    // Player
+    // Player - spawn on first platform
     b2BodyDef playerDef = b2DefaultBodyDef();
     playerDef.type = b2_dynamicBody;
-    playerDef.position = { 0.0f,10.0f };
+
+    // Position player on the first platform
+    float spawnX = -10.0f;
+    float spawnY = 2.0f;
+    if (!platforms.empty()) {
+        b2Vec2 platformPos = b2Body_GetPosition(platforms[0]);
+        spawnX = platformPos.x;
+        spawnY = platformPos.y + PLATFORM_HEIGHT + 1.0f;
+    }
+
+    playerDef.position = { spawnX, spawnY };
     b2BodyId player = b2CreateBody(g_world, &playerDef);
     UserData* playerUD = new UserData{ ENTITY_PLAYER,nullptr, playerTexture,true, 0.0f, false, 1.0f };
     b2Body_SetUserData(player, playerUD);
@@ -1380,10 +1483,19 @@ int main(int argc, char* argv[]) {
     b2ShapeDef playerSD = b2DefaultShapeDef(); playerSD.density = 1.0f; playerSD.material.friction = 0.3f;
     b2CreatePolygonShape(player, &playerSD, &playerShape);
 
-    // Single Box
+    // Single Box - place on a platform
     b2BodyDef boxDef = b2DefaultBodyDef();
     boxDef.type = b2_dynamicBody;
-    boxDef.position = { 2.0f,6.0f };
+
+    float boxX = 0.0f;
+    float boxY = 2.0f;
+    if (platforms.size() > 3) {
+        b2Vec2 platformPos = b2Body_GetPosition(platforms[3]);
+        boxX = platformPos.x;
+        boxY = platformPos.y + PLATFORM_HEIGHT + 0.5f;
+    }
+
+    boxDef.position = { boxX, boxY };
     b2BodyId box = b2CreateBody(g_world, &boxDef);
     UserData* boxUD = new UserData{ ENTITY_BOX, new glm::vec3(g_boxColor), boxTexture, true, 0.0f, false, 1.0f };
     b2Body_SetUserData(box, boxUD);
@@ -1430,6 +1542,7 @@ int main(int argc, char* argv[]) {
             // Update game systems
             update_particles(deltaTime);
             update_score_popups(deltaTime);
+            update_platforms(player); // Update the infinite platform system
 
             // --- 1-meter proximity AABB ---
             AABB playerBox = getAABBWithProximity(player, 1.0f, 1.0f, 1.0f);
@@ -1456,11 +1569,19 @@ int main(int argc, char* argv[]) {
 
             update_box_animation(boxUD, deltaTime, isPlayerNear);
 
-            // Auto reset if player falls
+            // Check if player fell below all platforms
             b2Vec2 ppos = b2Body_GetPosition(player);
-            if (ppos.y < -20.0f) {
+            if (ppos.y < -10.0f) {
                 take_damage(10, player);
-                b2Body_SetTransform(player, { 0.0f,10.0f }, b2MakeRot(0.0f));
+                // Respawn player on a platform
+                float respawnX = -5.0f;
+                float respawnY = 5.0f;
+                if (!platforms.empty()) {
+                    b2Vec2 platformPos = b2Body_GetPosition(platforms[0]);
+                    respawnX = platformPos.x;
+                    respawnY = platformPos.y + PLATFORM_HEIGHT + 1.0f;
+                }
+                b2Body_SetTransform(player, { respawnX, respawnY }, b2MakeRot(0.0f));
                 b2Body_SetLinearVelocity(player, { 0.0f,0.0f });
             }
         }
@@ -1518,8 +1639,12 @@ int main(int argc, char* argv[]) {
             glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
             };
 
-        // Render world objects with camera
-        drawBody(ground, 50.0f, 0.1f);
+        // Render platforms
+        for (auto& platform : platforms) {
+            drawBody(platform, PLATFORM_WIDTH / 2, PLATFORM_HEIGHT / 2);
+        }
+
+        // Render other objects
         if (!isPlayerDead) {
             drawBody(player, 1.0f, 1.0f);
         }
@@ -1577,8 +1702,12 @@ int main(int argc, char* argv[]) {
         render_text("Score:" + std::to_string(currentScore), 20.0f, WINDOW_HEIGHT - 40.0f, 0.8f,
             glm::vec3(1, 1, 1), glm::vec3(0.2f, 0.6f, 1.0f), glm::vec2(2, -2));
 
+        // Platform count info
+        render_text("Platforms: " + std::to_string(platforms.size()), 20.0f, WINDOW_HEIGHT - 70.0f, 0.5f,
+            glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
+
         // Camera info
-        render_text("Zoom: " + std::to_string(cameraZoom).substr(0, 4) + " (+/- to adjust)", 20.0f, WINDOW_HEIGHT - 80.0f, 0.4f,
+        render_text("Zoom: " + std::to_string(cameraZoom).substr(0, 4) + " (+/- to adjust)", 20.0f, WINDOW_HEIGHT - 90.0f, 0.4f,
             glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
 
         // Game state text
@@ -1594,7 +1723,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Controls help
-        render_text("ESC:Pause  H:Damage  J:Heal  X:Explosion ",
+        render_text("ESC:Pause  H:Damage  J:Heal  X:Explosion  Arrow Keys:Move  Space:Jump",
             20.0f, 30.0f, 0.4f,
             glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
 
@@ -1606,7 +1735,14 @@ int main(int argc, char* argv[]) {
     delete playerUD;
     delete boxUD->color;
     delete boxUD;
-    delete groundUD;
+
+    // Cleanup platforms
+    for (auto& platform : platforms) {
+        UserData* ud = (UserData*)b2Body_GetUserData(platform);
+        delete ud;
+        b2DestroyBody(platform);
+    }
+    platforms.clear();
 
     // Cleanup health bar
     glDeleteVertexArrays(1, &healthBarVAO);
@@ -1641,10 +1777,7 @@ int main(int argc, char* argv[]) {
         if (backgroundMusic) Mix_FreeMusic(backgroundMusic);
         if (jumpSound) Mix_FreeChunk(jumpSound);
         if (explosionSound) Mix_FreeChunk(explosionSound);
-       /* if (damageSound) Mix_FreeChunk(damageSound);
-        if (healSound) Mix_FreeChunk(healSound);*/
         if (scoreSound) Mix_FreeChunk(scoreSound);
-        //if (deathSound) Mix_FreeChunk(deathSound);
 
         Mix_CloseAudio();
         SDL_Quit();
