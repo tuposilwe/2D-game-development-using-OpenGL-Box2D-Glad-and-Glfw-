@@ -35,6 +35,13 @@
 int lastPlatformIndex = 0; // Track the highest platform index passed
 float platformPassThreshold = 1.0f; // How far past the platform to count as "passed"
 
+// ---------------- Game Over System ----------------
+int deathCount = 0;
+const int MAX_DEATHS = 3;
+bool gameOver = false;
+float gameOverTimer = 0.0f;
+const float GAME_OVER_DISPLAY_TIME = 5.0f; // Show game over screen for 5 seconds
+
 // ---------------- Improved Movement System ----------------
 float moveSpeed = 4.0f;           // Max horizontal speed
 float acceleration = 50.0f;       // How quickly player accelerates
@@ -605,8 +612,9 @@ void player_died(b2BodyId player) {
 
     isPlayerDead = true;
     respawnTimer = RESPAWN_TIME;
+    deathCount++;
 
-    std::cout << "Player died! Final Score: " << currentScore << std::endl;
+    std::cout << "Player died! Deaths: " << deathCount << "/" << MAX_DEATHS << " | Final Score: " << currentScore << std::endl;
 
     // Death effect
     b2Vec2 playerPos = b2Body_GetPosition(player);
@@ -614,6 +622,16 @@ void player_died(b2BodyId player) {
 
     // Make player fall through platforms
     b2Body_SetGravityScale(player, 2.0f);
+
+    // Check for game over
+    if (deathCount >= MAX_DEATHS) {
+        gameOver = true;
+        gameOverTimer = GAME_OVER_DISPLAY_TIME;
+        std::cout << "GAME OVER! Final Score: " << currentScore << std::endl;
+
+        // Play game over sound if you have one
+        // play_game_over_sound();
+    }
 }
 
 void take_damage(int damage, b2BodyId player) {
@@ -641,6 +659,11 @@ void heal(int amount, b2BodyId player) {
 }
 
 void respawn_player(b2BodyId player) {
+    if (gameOver) {
+        // Don't respawn if game is over
+        return;
+    }
+
     play_background_music();
 
     isPlayerDead = false;
@@ -663,7 +686,60 @@ void respawn_player(b2BodyId player) {
     cameraPosition = glm::vec2(spawnX * PIXELS_PER_METER, spawnY * PIXELS_PER_METER);
 
     // Respawn effect
-    spawn_explosion(glm::vec2(spawnX, spawnY));
+    //spawn_explosion(glm::vec2(spawnX, spawnY));
+
+    // Just stop the respawn timer and keep the player dead
+    respawnTimer = 0.0f;
+    std::cout << "Player died - no respawn" << std::endl;
+}
+
+
+void reset_game(b2BodyId player) {
+    // Reset all game state variables
+    deathCount = 0;
+    gameOver = false;
+    gameOverTimer = 0.0f;
+    currentScore = 0;
+    playerHealth = maxHealth;
+    isPlayerDead = false;
+    newHighScore = false;
+    lastPlatformIndex = 0;
+
+    // Reset player position and state
+    b2Body_SetGravityScale(player, 1.0f);
+
+    // Find a safe spawn position
+    float spawnX = -10.0f;
+    float spawnY = 2.0f;
+    if (!platforms.empty()) {
+        b2Vec2 platformPos = b2Body_GetPosition(platforms[0]);
+        spawnX = platformPos.x;
+        spawnY = platformPos.y + PLATFORM_HEIGHT + 1.0f;
+    }
+
+    b2Body_SetTransform(player, { spawnX, spawnY }, b2MakeRot(0.0f));
+    b2Body_SetLinearVelocity(player, { 0.0f, 0.0f });
+
+    // Reset camera
+    cameraPosition = glm::vec2(spawnX * PIXELS_PER_METER, spawnY * PIXELS_PER_METER);
+
+    // Clear existing platforms and generate new ones
+    for (auto& platform : platforms) {
+        UserData* ud = (UserData*)b2Body_GetUserData(platform);
+        delete ud;
+        b2DestroyBody(platform);
+    }
+    platforms.clear();
+    generate_initial_platforms();
+
+    // Clear particles and floating text
+    particles.clear();
+    floatingTexts.clear();
+
+    // Restart music
+    play_background_music();
+
+    std::cout << "Game reset! Starting new game..." << std::endl;
 }
 
 // ---------------- Shaders ----------------
@@ -1949,6 +2025,21 @@ int main(int argc, char* argv[]) {
         process_input(win, player, deltaTime);
         update_ground_detection(player,deltaTime);
 
+        if (gameOver && glfwGetKey(win, GLFW_KEY_ENTER) == GLFW_PRESS) {
+            static bool enterKeyHandled = false;
+            if (!enterKeyHandled) {
+                reset_game(player);
+                enterKeyHandled = true;
+
+                // Small delay to prevent multiple rapid restarts
+                glfwWaitEventsTimeout(0.1);
+            }
+        }
+        else if (glfwGetKey(win, GLFW_KEY_ENTER) == GLFW_RELEASE) {
+            static bool enterKeyHandled = false;
+            enterKeyHandled = false;
+        }
+
 
         // toggles pause/resume
         if (currentGameState == STATE_PAUSED) {
@@ -2042,11 +2133,19 @@ int main(int argc, char* argv[]) {
         else if (isPlayerDead) {
             // Still update respawn timer when paused but dead
             respawnTimer -= deltaTime;
-            if (respawnTimer <= 0.0f) {
+
+            if (gameOver) {
+                // Update game over timer
+                gameOverTimer -= deltaTime;
+                //if (gameOverTimer <= 0.0f) {
+                //    // Auto-restart after timer expires
+                //    reset_game(player);
+                //}
+            }
+            else if (respawnTimer <= 0.0f && !gameOver) {  // Only respawn if game is not over
                 respawn_player(player);
             }
         }
-
         // --- Rendering ---
         glClear(GL_COLOR_BUFFER_BIT);
         glUseProgram(g_prog);
@@ -2119,6 +2218,44 @@ int main(int argc, char* argv[]) {
         render_score_popups(proj);
 
         // --- GUI Rendering (screen space) ---
+        // Game Over Screen
+        if (gameOver) {
+            // Dark overlay
+            render_pause_overlay(proj);
+
+            float centerX = WINDOW_WIDTH / 2.0f;
+            float centerY = WINDOW_HEIGHT / 2.0f;
+
+            // Game Over text
+            render_text("GAME OVER", centerX - 150.0f, centerY + 80.0f, 1.5f,
+                glm::vec3(1, 0.2f, 0.2f), glm::vec3(0.5f, 0.1f, 0.1f), glm::vec2(3, -3));
+
+            // Final score
+            render_text("Final Score: " + std::to_string(currentScore),
+                centerX - 120.0f, centerY + 30.0f, 0.8f,
+                glm::vec3(1, 1, 1), glm::vec3(0, 0, 0), glm::vec2(2, -2));
+
+            // High score
+            std::string hsText = "High Score: " + std::to_string(highScore);
+            glm::vec3 hsColor = newHighScore ? glm::vec3(1, 1, 0) : glm::vec3(1, 1, 1);
+            render_text(hsText, centerX - 100.0f, centerY - 10.0f, 0.7f,
+                hsColor, glm::vec3(0.2f, 0.2f, 0.4f), glm::vec2(1, -1));
+
+            if (newHighScore) {
+                render_text("NEW HIGH SCORE!", centerX - 120.0f, centerY - 40.0f, 0.8f,
+                    glm::vec3(1, 1, 0), glm::vec3(0.5f, 0.5f, 0), glm::vec2(2, -2));
+            }
+
+            // Death count
+            render_text("Deaths: " + std::to_string(deathCount) + "/" + std::to_string(MAX_DEATHS),
+                centerX - 80.0f, centerY - 80.0f, 0.6f,
+                glm::vec3(1, 0.5f, 0.5f), glm::vec3(0.5f, 0.2f, 0.2f), glm::vec2(1, -1));
+
+
+            render_text("Press ENTER to restart now", centerX - 120.0f, centerY - 150.0f, 0.5f,
+                glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
+        }
+
 
         // Play/Pause button in top-right corner
         if (currentGameState == STATE_PLAYING) {
@@ -2184,6 +2321,12 @@ int main(int argc, char* argv[]) {
         render_text(hsText, 20.0f, WINDOW_HEIGHT - 70.0f, 0.6f,
             hsColor, glm::vec3(0.2f, 0.2f, 0.4f), glm::vec2(1, -1));
 
+        // Death counter
+        std::string deathsText = "Deaths: " + std::to_string(deathCount) + "/" + std::to_string(MAX_DEATHS);
+        glm::vec3 deathsColor = (deathCount >= MAX_DEATHS - 1) ? glm::vec3(1, 0.3f, 0.3f) : glm::vec3(0.8f, 0.8f, 0.8f);
+        render_text(deathsText, 20.0f, WINDOW_HEIGHT - 100.0f, 0.5f,
+            deathsColor, glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
+
         // Platform count info (moved down)
         //render_text("Platforms: " + std::to_string(platforms.size()), 20.0f, WINDOW_HEIGHT - 95.0f, 0.5f,
         //    glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
@@ -2198,7 +2341,7 @@ int main(int argc, char* argv[]) {
                 glm::vec3(1, 1, 0), glm::vec3(0.5f, 0.5f, 0), glm::vec2(2, -2));
         }
 
-        if (isPlayerDead) {
+        if (isPlayerDead && !gameOver) {
             std::string respawnText = "Respawning in " + std::to_string(static_cast<int>(respawnTimer)) + "s";
             render_text(respawnText, WINDOW_WIDTH / 2 - 150.0f, WINDOW_HEIGHT / 2, 1.0f,
                 glm::vec3(1, 0.3f, 0.3f), glm::vec3(0.5f, 0.1f, 0.1f), glm::vec2(2, -2));
