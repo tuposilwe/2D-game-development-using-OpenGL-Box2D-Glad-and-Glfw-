@@ -30,6 +30,12 @@
 #include <SDL.h>
 #include <SDL_mixer.h>
 
+// ---------------- Box System ----------------
+b2BodyId currentBox = b2_nullBodyId;
+bool boxSpawned = false;
+const float BOX_RESPAWN_TIME = 5.0f;
+float boxRespawnTimer = 0.0f;
+
 
 // ---------------- Platform Scoring System ----------------
 int lastPlatformIndex = 0; // Track the highest platform index passed
@@ -85,7 +91,7 @@ float jumpCutMultiplier = 0.5f; // Short hop (reduce upward velocity on release)
 int highScore = 0;
 const char* HIGH_SCORE_FILE = "highscore.dat";
 bool newHighScore = false;
-
+GLuint boxTexture;
 
 
 // ---------------- Settings ----------------
@@ -700,6 +706,20 @@ void respawn_player(b2BodyId player) {
 
 
 void reset_game(b2BodyId player) {
+    // Reset box system
+    if (b2Body_IsValid(currentBox)) {
+        UserData* ud = (UserData*)b2Body_GetUserData(currentBox);
+        if (ud) {
+            delete ud->color;
+            delete ud;
+        }
+        b2DestroyBody(currentBox);
+    }
+    currentBox = b2_nullBodyId;
+    boxSpawned = false;
+    boxRespawnTimer = 0.0f;
+
+
     // Reset all game state variables
     deathCount = 0;
     gameOver = false;
@@ -953,6 +973,12 @@ GLuint create_square_vao_ebo() {
 struct AABB { float minX, minY, maxX, maxY; };
 
 AABB getAABBWithProximity(b2BodyId body, float halfW, float halfH, float proximity) {
+
+    // Safety check for invalid body
+    if (!b2Body_IsValid(body)) {
+        return { 0.0f, 0.0f, 0.0f, 0.0f }; // Return empty AABB
+    }
+
     b2Vec2 pos = b2Body_GetPosition(body);
     return {
         pos.x - halfW - proximity,
@@ -1881,6 +1907,48 @@ void check_platform_scoring(b2BodyId player) {
     }
 }
 
+void spawn_box_on_random_platform() {
+    // Remove existing box if any
+    if (b2Body_IsValid(currentBox)) {
+        UserData* ud = (UserData*)b2Body_GetUserData(currentBox);
+        if (ud) {
+            delete ud->color;
+            delete ud;
+        }
+        b2DestroyBody(currentBox);
+        currentBox = b2_nullBodyId;
+    }
+
+    if (platforms.empty()) return;
+
+    // Choose a random platform (avoid the first few platforms)
+    int platformIndex = 3 + rand() % (platforms.size() - 3);
+    if (platformIndex >= platforms.size()) platformIndex = platforms.size() - 1;
+
+    b2Vec2 platformPos = b2Body_GetPosition(platforms[platformIndex]);
+
+    // Create box on top of the platform
+    b2BodyDef boxDef = b2DefaultBodyDef();
+    boxDef.type = b2_dynamicBody;
+    boxDef.position = { platformPos.x, platformPos.y + PLATFORM_HEIGHT / 2 + 0.5f };
+
+    currentBox = b2CreateBody(g_world, &boxDef);
+    UserData* boxUD = new UserData{ ENTITY_BOX, new glm::vec3(g_boxColor), boxTexture, true, 0.0f, false, 1.0f };
+    b2Body_SetUserData(currentBox, boxUD);
+
+    b2Polygon boxShape = b2MakeBox(0.5f, 0.5f);
+    b2ShapeDef boxSD = b2DefaultShapeDef();
+    boxSD.density = 1.0f;
+    boxSD.material.friction = 0.3f;
+    boxSD.material.restitution = 0.1f;
+    b2CreatePolygonShape(currentBox, &boxSD, &boxShape);
+
+    boxSpawned = true;
+    boxRespawnTimer = 0.0f;
+
+    std::cout << "Box spawned on platform " << platformIndex << std::endl;
+}
+
 
 // ---------------- Main ----------------
 int main(int argc, char* argv[]) {
@@ -1940,7 +2008,7 @@ int main(int argc, char* argv[]) {
         playerTexture = create_procedural_texture(64, 64, glm::vec3(0.9f, 0.3f, 0.25f), glm::vec3(0.7f, 0.2f, 0.2f));
     }
 
-    GLuint boxTexture = load_texture("playegr.png");
+     boxTexture = load_texture("playegr.png");
     if (boxTexture == 0) {
         boxTexture = create_procedural_texture(64, 64, glm::vec3(0.2f, 0.5f, 0.8f), glm::vec3(0.1f, 0.3f, 0.6f));
     }
@@ -2013,25 +2081,10 @@ int main(int argc, char* argv[]) {
     //playerSD.material.frictionMix = 0.1f;  // Reduced friction mixing
     b2CreatePolygonShape(player, &playerSD, &playerShape);
 
-    // Single Box - place on a platform
-    b2BodyDef boxDef = b2DefaultBodyDef();
-    boxDef.type = b2_dynamicBody;
+    // Don't create initial box here - it will be spawned automatically
+    currentBox = b2_nullBodyId;
+    boxSpawned = false;
 
-    float boxX = 0.0f;
-    float boxY = 2.0f;
-    if (platforms.size() > 3) {
-        b2Vec2 platformPos = b2Body_GetPosition(platforms[3]);
-        boxX = platformPos.x;
-        boxY = platformPos.y + PLATFORM_HEIGHT + 0.5f;
-    }
-
-    boxDef.position = { boxX, boxY };
-    b2BodyId box = b2CreateBody(g_world, &boxDef);
-    UserData* boxUD = new UserData{ ENTITY_BOX, new glm::vec3(g_boxColor), boxTexture, true, 0.0f, false, 1.0f };
-    b2Body_SetUserData(box, boxUD);
-    b2Polygon boxShape = b2MakeBox(0.5f, 0.5f);
-    b2ShapeDef boxSD = b2DefaultShapeDef(); boxSD.density = 1.0f; boxSD.material.friction = 0.3f;
-    b2CreatePolygonShape(box, &boxSD, &boxShape);
 
     float timeStep = 1.0f / 60.0f;
     proj = glm::ortho(0.0f, float(WINDOW_WIDTH), 0.0f, float(WINDOW_HEIGHT), -1.0f, 1.0f);
@@ -2103,41 +2156,69 @@ int main(int argc, char* argv[]) {
             update_score_popups(deltaTime);
             update_platforms(player); // Update the infinite platform system
             check_platform_scoring(player);
+            // Box respawn logic
+            if (!boxSpawned && boxRespawnTimer > 0.0f) {
+                boxRespawnTimer -= deltaTime;
+                if (boxRespawnTimer <= 0.0f && !platforms.empty()) {
+                    spawn_box_on_random_platform();
+                }
+            }
+
+            // Auto-spawn box if none exists and enough time has passed
+            if (!boxSpawned && boxRespawnTimer <= 0.0f && !platforms.empty()) {
+                spawn_box_on_random_platform();
+            }
 
             // --- 1-meter proximity AABB ---
-            AABB playerBox = getAABBWithProximity(player, 1.0f, 1.0f, 1.0f);
-            *(boxUD->color) = g_boxColor;
-            AABB boxAABB = getAABBWithProximity(box, 0.5f, 0.5f, 0.0f);
+            AABB playerBox = getAABBWithProximity(player, 1.0f, 1.0f, 0.5f);
+            bool isPlayerNear = false;
 
-            bool isPlayerNear = aabbOverlap(playerBox, boxAABB);
-            if (isPlayerNear) {
-                *(boxUD->color) = g_yellowColor;
+            // Only check proximity if the box exists and is valid
+            if (b2Body_IsValid(currentBox) && !isPlayerDead) {
+                AABB boxAABB = getAABBWithProximity(currentBox, 0.5f, 0.5f, 0.0f);
+                isPlayerNear = aabbOverlap(playerBox, boxAABB);
 
-                if (!wasPlayerNear) {
-                    currentScore += 10;
-                    play_score_sound();
+                UserData* boxUD = (UserData*)b2Body_GetUserData(currentBox);
+                if (boxUD) {
+                    if (isPlayerNear) {
+                        *(boxUD->color) = g_yellowColor;
+                        update_box_animation(boxUD, deltaTime, true);
 
-                    // Check for new high score
-                    check_high_score();
+                        if (!wasPlayerNear) {
+                            // Player collected the box!
+                            currentScore += 10;
+                            play_score_sound();
 
-                    b2Vec2 boxPos = b2Body_GetPosition(box);
-                    spawn_score_popup(10, glm::vec2(boxPos.x, boxPos.y + 1.0f));
+                            b2Vec2 boxPos = b2Body_GetPosition(currentBox);
+                            spawn_score_popup(10, glm::vec2(boxPos.x, boxPos.y + 1.0f));
 
-                    if (newHighScore) {
-                        // Special effect for new high score
-                        spawn_high_score_celebration(player);
-                        play_high_score_sound();
+                            // Remove the box
+                            delete boxUD->color;
+                            delete boxUD;
+                            b2DestroyBody(currentBox);
+                            currentBox = b2_nullBodyId;
+                            boxSpawned = false;
+                            boxRespawnTimer = BOX_RESPAWN_TIME;
+
+                            // Check for high score
+                            check_high_score();
+
+                            std::cout << "Box collected! Score: " << currentScore << std::endl;
+                        }
+                        wasPlayerNear = true;
                     }
-
-                    std::cout << "Score: " << currentScore << " | High Score: " << highScore << std::endl;
+                    else {
+                        *(boxUD->color) = g_boxColor;
+                        update_box_animation(boxUD, deltaTime, false);
+                        wasPlayerNear = false;
+                    }
                 }
-                wasPlayerNear = true;
             }
             else {
                 wasPlayerNear = false;
             }
 
-            update_box_animation(boxUD, deltaTime, isPlayerNear);
+            //update_box_animation(boxUD, deltaTime, isPlayerNear);
 
             // Check if player fell below all platforms
             b2Vec2 ppos = b2Body_GetPosition(player);
@@ -2226,7 +2307,10 @@ int main(int argc, char* argv[]) {
         if (!isPlayerDead) {
             drawBody(player, 1.0f, 1.0f);
         }
-        drawBody(box, 0.5f, 0.5f);
+
+        if (b2Body_IsValid(currentBox)) {
+            drawBody(currentBox, 0.5f, 0.5f);
+        }
 
         // Reset brightness for UI elements (they should remain bright)
         glUniform1f(g_uBrightness, 1.0f);
@@ -2393,8 +2477,6 @@ int main(int argc, char* argv[]) {
 
     // Cleanup
     delete playerUD;
-    delete boxUD->color;
-    delete boxUD;
 
     // Cleanup platforms
     for (auto& platform : platforms) {
