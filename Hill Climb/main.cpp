@@ -4,7 +4,6 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 
-
 #include <iostream>
 #include <cmath>
 #include <vector>
@@ -30,12 +29,19 @@
 #include <SDL.h>
 #include <SDL_mixer.h>
 
+// ---------------- Window State ----------------
+bool isFullscreen = false;
+int windowedWidth = 1200;
+int windowedHeight = 900;
+int windowedPosX = 100;
+int windowedPosY = 100;
+GLFWmonitor* primaryMonitor = nullptr;
+
 // ---------------- Box System ----------------
 b2BodyId currentBox = b2_nullBodyId;
 bool boxSpawned = false;
 const float BOX_RESPAWN_TIME = 5.0f;
 float boxRespawnTimer = 0.0f;
-
 
 // ---------------- Platform Scoring System ----------------
 int lastPlatformIndex = 0; // Track the highest platform index passed
@@ -64,7 +70,6 @@ bool isJumping = false;
 int maxJumps = 2;  // 1 normal jump + 1 double jump
 int jumpsRemaining = maxJumps;
 
-
 float doubleJumpPower = 7.0f;
 
 float coyoteTime = 0.15f;
@@ -84,8 +89,6 @@ float apexThreshold = 0.3f;       // velocity threshold for apex
 
 // Variable jump + fall tweaks
 float jumpCutMultiplier = 0.5f; // Short hop (reduce upward velocity on release)
-//float fallMultiplier = 1.5f;    // Make falling faster than rising
-
 
 // ---------------- High Score System ----------------
 int highScore = 0;
@@ -93,10 +96,9 @@ const char* HIGH_SCORE_FILE = "highscore.dat";
 bool newHighScore = false;
 GLuint boxTexture;
 
-
 // ---------------- Settings ----------------
-const int WINDOW_WIDTH = 800;
-const int WINDOW_HEIGHT = 600;
+int WINDOW_WIDTH = 1200;
+int WINDOW_HEIGHT = 900;
 const float PIXELS_PER_METER = 50.0f;
 
 // ---------------- Platform System ----------------
@@ -237,17 +239,11 @@ void resume_background_music() {
     }
 }
 
-
-
-
-
 // Specific sound functions
 void play_jump_sound() { play_sound(jumpSound); }
 void play_explosion_sound() { play_sound(explosionSound); }
 void play_score_sound() { play_sound(scoreSound); }
-void play_high_score_sound() {
-    play_sound(highScoreSound);
-}
+void play_high_score_sound() { play_sound(highScoreSound); }
 
 // Health system
 int playerHealth = 100;
@@ -634,9 +630,6 @@ void player_died(b2BodyId player) {
         gameOver = true;
         gameOverTimer = GAME_OVER_DISPLAY_TIME;
         std::cout << "GAME OVER! Final Score: " << currentScore << std::endl;
-
-        // Play game over sound if you have one
-        // play_game_over_sound();
     }
 }
 
@@ -704,7 +697,6 @@ void respawn_player(b2BodyId player) {
     std::cout << "Player respawned" << std::endl;
 }
 
-
 void reset_game(b2BodyId player) {
     // Reset box system
     if (b2Body_IsValid(currentBox)) {
@@ -718,7 +710,6 @@ void reset_game(b2BodyId player) {
     currentBox = b2_nullBodyId;
     boxSpawned = false;
     boxRespawnTimer = 0.0f;
-
 
     // Reset all game state variables
     deathCount = 0;
@@ -785,6 +776,32 @@ void reset_game(b2BodyId player) {
     play_background_music();
 
     std::cout << "Game reset! Starting new game..." << std::endl;
+}
+
+// ---------------- Fullscreen Toggle ----------------
+void toggle_fullscreen(GLFWwindow* window) {
+    if (isFullscreen) {
+        // Switch to windowed mode
+        glfwSetWindowMonitor(window, nullptr, windowedPosX, windowedPosY, windowedWidth, windowedHeight, GLFW_DONT_CARE);
+        isFullscreen = false;
+        std::cout << "Switched to windowed mode: " << windowedWidth << "x" << windowedHeight << std::endl;
+    }
+    else {
+        // Store current window position and size
+        glfwGetWindowPos(window, &windowedPosX, &windowedPosY);
+        glfwGetWindowSize(window, &windowedWidth, &windowedHeight);
+
+        // Get monitor info for fullscreen
+        const GLFWvidmode* mode = glfwGetVideoMode(primaryMonitor);
+        glfwSetWindowMonitor(window, primaryMonitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+        isFullscreen = true;
+        std::cout << "Switched to fullscreen: " << mode->width << "x" << mode->height << std::endl;
+    }
+
+    // Update viewport
+    int width, height;
+    glfwGetFramebufferSize(window, &width, &height);
+    glViewport(0, 0, width, height);
 }
 
 // ---------------- Shaders ----------------
@@ -973,7 +990,6 @@ GLuint create_square_vao_ebo() {
 struct AABB { float minX, minY, maxX, maxY; };
 
 AABB getAABBWithProximity(b2BodyId body, float halfW, float halfH, float proximity) {
-
     // Safety check for invalid body
     if (!b2Body_IsValid(body)) {
         return { 0.0f, 0.0f, 0.0f, 0.0f }; // Return empty AABB
@@ -1081,7 +1097,6 @@ void handle_jump_input(b2BodyId player, GLFWwindow* win, float deltaTime) {
     b2Body_SetLinearVelocity(player, velocity);
 }
 
-
 void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
     // ESC key to toggle pause
     static bool escKeyPressed = false;
@@ -1100,6 +1115,31 @@ void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
     }
     else {
         escKeyPressed = false;
+    }
+
+    // Fullscreen toggle with F11 or Alt+Enter
+    static bool f11Pressed = false;
+    if (glfwGetKey(win, GLFW_KEY_F11) == GLFW_PRESS) {
+        if (!f11Pressed) {
+            toggle_fullscreen(win);
+            f11Pressed = true;
+        }
+    }
+    else {
+        f11Pressed = false;
+    }
+
+    // Alt+Enter for fullscreen (common alternative)
+    static bool altEnterPressed = false;
+    if ((glfwGetKey(win, GLFW_KEY_LEFT_ALT) == GLFW_PRESS || glfwGetKey(win, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS) &&
+        glfwGetKey(win, GLFW_KEY_ENTER) == GLFW_PRESS) {
+        if (!altEnterPressed) {
+            toggle_fullscreen(win);
+            altEnterPressed = true;
+        }
+    }
+    else {
+        altEnterPressed = false;
     }
 
     // Camera zoom controls
@@ -1229,115 +1269,19 @@ void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
     }
 }
 
-
-
-// Update the ground detection to be more reliable:
-void update_ground_detection(b2BodyId player, float deltaTime) {
-    bool wasGrounded = isGrounded;
-
-    // Use multiple raycasts for better ground detection
-    b2Vec2 playerPos = b2Body_GetPosition(player);
-    bool groundHit = false;
-    int groundHits = 0;
-
-    // Cast 5 rays across the player's bottom for more precise detection
-    float rayOffsets[] = { -0.4f, -0.2f, 0.0f, 0.2f, 0.4f };
-    for (float offset : rayOffsets) {
-        b2Vec2 origin = { playerPos.x + offset, playerPos.y - 0.9f }; // Start from bottom
-        b2Vec2 translation = { 0.0f, -0.3f }; // Shorter, more precise ray
-
-        b2QueryFilter filter = b2DefaultQueryFilter();
-        b2RayResult result = b2World_CastRayClosest(g_world, origin, translation, filter);
-
-        if (result.hit && result.fraction < 1.0f) {
-            groundHits++;
-            if (groundHits >= 2) { // Require at least 2 hits to be considered grounded
-                groundHit = true;
-                break;
-            }
-        }
-    }
-
-    isGrounded = groundHit;
-
-    // Additional check: if player velocity is very low and we're between platforms, 
-    // apply a small upward force to unstick
-    b2Vec2 velocity = b2Body_GetLinearVelocity(player);
-    if (!isGrounded && fabs(velocity.y) < 0.1f && fabs(velocity.x) < 0.1f) {
-        // Check if we might be stuck between platforms
-        bool mightBeStuck = false;
-
-        // Cast rays upward to detect platforms above
-        for (float offset : rayOffsets) {
-            b2Vec2 origin = { playerPos.x + offset, playerPos.y };
-            b2Vec2 translation = { 0.0f, 1.5f }; // Check above
-
-            b2QueryFilter filter = b2DefaultQueryFilter();
-            b2RayResult result = b2World_CastRayClosest(g_world, origin, translation, filter);
-
-            if (result.hit && result.fraction < 1.0f) {
-                mightBeStuck = true;
-                break;
-            }
-        }
-
-        if (mightBeStuck) {
-            // Apply small upward force to unstick
-            b2Body_ApplyForceToCenter(player, { 0.0f, 5.0f }, true);
-        }
-    }
-
-    // Coyote time and jump reset logic
-    if (wasGrounded && !isGrounded) {
-        coyoteTimer = coyoteTime;
-    }
-    else if (isGrounded) {
-        coyoteTimer = 0.0f;
-        jumpsRemaining = maxJumps;
-        hasDoubleJumped = false;
-        isJumping = false;
-    }
-    else {
-        coyoteTimer -= deltaTime;
-    }
-
-    if (jumpBufferTimer > 0) jumpBufferTimer -= deltaTime;
-}
-
-void check_and_resolve_stuck_situation(b2BodyId player) {
-    b2Vec2 playerPos = b2Body_GetPosition(player);
-    b2Vec2 velocity = b2Body_GetLinearVelocity(player);
-
-    // Check if player is stuck (very low velocity for extended period)
-    static float stuckTimer = 0.0f;
-    if (fabs(velocity.x) < 0.1f && fabs(velocity.y) < 0.1f && !isGrounded) {
-        stuckTimer += 1.0f / 60.0f; // Assuming 60 FPS
-    }
-    else {
-        stuckTimer = 0.0f;
-    }
-
-    // If stuck for more than 1 second, apply rescue force
-    if (stuckTimer > 1.0f) {
-        // Apply upward and slight forward force
-        b2Body_ApplyForceToCenter(player, { 10.0f, 15.0f }, true);
-        stuckTimer = 0.0f; // Reset timer
-
-        std::cout << "Emergency unstuck applied!" << std::endl;
-    }
-}
-
 // ---------------- Mouse Input ----------------
 void process_mouse_input(GLFWwindow* window, double xpos, double ypos, int button, int action) {
     if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
         // Convert to screen coordinates (flip Y)
+        int width, height;
+        glfwGetFramebufferSize(window, &width, &height);
         float mouseX = xpos;
-        float mouseY = WINDOW_HEIGHT - ypos;
+        float mouseY = height - ypos;
 
         // Pause menu buttons
         if (showPauseMenu) {
-            float centerX = WINDOW_WIDTH / 2.0f;
-            float centerY = WINDOW_HEIGHT / 2.0f;
+            float centerX = width / 2.0f;
+            float centerY = height / 2.0f;
             float buttonWidth = 200.0f;
             float buttonHeight = 50.0f;
             float buttonSpacing = 60.0f;
@@ -1354,7 +1298,7 @@ void process_mouse_input(GLFWwindow* window, double xpos, double ypos, int butto
         }
 
         // Play/Pause button in HUD (top-right corner)
-        if (is_point_in_rect(mouseX, mouseY, WINDOW_WIDTH - 60, WINDOW_HEIGHT - 60, 50, 50)) {
+        if (is_point_in_rect(mouseX, mouseY, width - 60, height - 60, 50, 50)) {
             if (currentGameState == STATE_PLAYING) {
                 currentGameState = STATE_PAUSED;
                 showPauseMenu = true;
@@ -1366,7 +1310,7 @@ void process_mouse_input(GLFWwindow* window, double xpos, double ypos, int butto
         }
     }
 
-    // ADD THIS: Middle mouse button handling
+    // Middle mouse button handling
     if (button == GLFW_MOUSE_BUTTON_MIDDLE) {
         if (action == GLFW_PRESS) {
             middleMousePressed = true;
@@ -1640,9 +1584,13 @@ void init_font_rendering() {
 void render_text(const std::string& text, float x, float y, float scale,
     const glm::vec3& color, const glm::vec3& shadowColor,
     const glm::vec2& shadowOffset) {
+
+    int width, height;
+    glfwGetFramebufferSize(glfwGetCurrentContext(), &width, &height);
+
     glUseProgram(fontProgram);
-    glm::mat4 projection = glm::ortho(0.0f, static_cast<float>(WINDOW_WIDTH),
-        0.0f, static_cast<float>(WINDOW_HEIGHT));
+    glm::mat4 projection = glm::ortho(0.0f, static_cast<float>(width),
+        0.0f, static_cast<float>(height));
     glUniformMatrix4fv(font_uMVP, 1, GL_FALSE, glm::value_ptr(projection));
 
     glActiveTexture(GL_TEXTURE0);
@@ -1693,9 +1641,12 @@ void render_text(const std::string& text, float x, float y, float scale,
 
 void spawn_score_popup(int points, const glm::vec2& position) {
     FloatingText ft;
+    int width, height;
+    glfwGetFramebufferSize(glfwGetCurrentContext(), &width, &height);
+
     ft.text = "+" + std::to_string(points);
-    ft.position = glm::vec2(position.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f,
-        position.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f);
+    ft.position = glm::vec2(position.x * PIXELS_PER_METER + width / 2.0f,
+        position.y * PIXELS_PER_METER + height / 2.0f);
     ft.life = 1.5f;
     ft.duration = 1.5f;
     ft.scale = 0.5f;
@@ -1708,9 +1659,12 @@ void spawn_score_popup(int points, const glm::vec2& position) {
 
 void spawn_damage_effect(int damage, const glm::vec2& position) {
     FloatingText ft;
+    int width, height;
+    glfwGetFramebufferSize(glfwGetCurrentContext(), &width, &height);
+
     ft.text = "-" + std::to_string(damage);
-    ft.position = glm::vec2(position.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f,
-        position.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f + 50.0f);
+    ft.position = glm::vec2(position.x * PIXELS_PER_METER + width / 2.0f,
+        position.y * PIXELS_PER_METER + height / 2.0f + 50.0f);
     ft.life = 1.0f;
     ft.duration = 1.0f;
     ft.scale = 0.7f;
@@ -1723,9 +1677,12 @@ void spawn_damage_effect(int damage, const glm::vec2& position) {
 
 void spawn_heal_effect(int amount, const glm::vec2& position) {
     FloatingText ft;
+    int width, height;
+    glfwGetFramebufferSize(glfwGetCurrentContext(), &width, &height);
+
     ft.text = "+" + std::to_string(amount) + " HP";
-    ft.position = glm::vec2(position.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f,
-        position.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f + 50.0f);
+    ft.position = glm::vec2(position.x * PIXELS_PER_METER + width / 2.0f,
+        position.y * PIXELS_PER_METER + height / 2.0f + 50.0f);
     ft.life = 1.5f;
     ft.duration = 1.5f;
     ft.scale = 0.6f;
@@ -1764,9 +1721,12 @@ void render_pause_overlay(const glm::mat4& proj) {
     glUniform1i(g_uUseTexture, false);
 
     // Semi-transparent dark overlay
+    int width, height;
+    glfwGetFramebufferSize(glfwGetCurrentContext(), &width, &height);
+
     glm::mat4 overlayModel(1.0f);
-    overlayModel = glm::translate(overlayModel, { WINDOW_WIDTH / 2.0f, WINDOW_HEIGHT / 2.0f, 0.0f });
-    overlayModel = glm::scale(overlayModel, { WINDOW_WIDTH, WINDOW_HEIGHT, 1.0f });
+    overlayModel = glm::translate(overlayModel, { width / 2.0f, height / 2.0f, 0.0f });
+    overlayModel = glm::scale(overlayModel, { width, height, 1.0f });
     glm::mat4 overlayMvp = proj * overlayModel;
     glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(overlayMvp));
     glUniform3f(g_uColor, 0.0f, 0.0f, 0.0f);
@@ -1796,7 +1756,6 @@ void process_mouse_movement(GLFWwindow* window, double xpos, double ypos) {
         lastMouseY = ypos;
     }
 }
-
 
 // ---------------- High Score Functions ----------------
 void save_high_score() {
@@ -1831,7 +1790,7 @@ void check_high_score() {
         highScore = currentScore;
         newHighScore = true;
         save_high_score();
-         
+
         std::cout << "NEW HIGH SCORE! " << highScore << std::endl;
     }
     else {
@@ -1848,9 +1807,12 @@ void spawn_high_score_celebration(b2BodyId player) {
 
     // Special floating text
     FloatingText ft;
+    int width, height;
+    glfwGetFramebufferSize(glfwGetCurrentContext(), &width, &height);
+
     ft.text = "NEW HIGH SCORE!";
-    ft.position = glm::vec2(playerPos.x * PIXELS_PER_METER + WINDOW_WIDTH / 2.0f,
-        playerPos.y * PIXELS_PER_METER + WINDOW_HEIGHT / 2.0f + 100.0f);
+    ft.position = glm::vec2(playerPos.x * PIXELS_PER_METER + width / 2.0f,
+        playerPos.y * PIXELS_PER_METER + height / 2.0f + 100.0f);
     ft.life = 3.0f;
     ft.duration = 3.0f;
     ft.scale = 0.8f;
@@ -1949,6 +1911,100 @@ void spawn_box_on_random_platform() {
     std::cout << "Box spawned on platform " << platformIndex << std::endl;
 }
 
+void update_ground_detection(b2BodyId player, float deltaTime) {
+    bool wasGrounded = isGrounded;
+
+    // Use multiple raycasts for better ground detection
+    b2Vec2 playerPos = b2Body_GetPosition(player);
+    bool groundHit = false;
+    int groundHits = 0;
+
+    // Cast 5 rays across the player's bottom for more precise detection
+    float rayOffsets[] = { -0.4f, -0.2f, 0.0f, 0.2f, 0.4f };
+    for (float offset : rayOffsets) {
+        b2Vec2 origin = { playerPos.x + offset, playerPos.y - 0.9f }; // Start from bottom
+        b2Vec2 translation = { 0.0f, -0.3f }; // Shorter, more precise ray
+
+        b2QueryFilter filter = b2DefaultQueryFilter();
+        b2RayResult result = b2World_CastRayClosest(g_world, origin, translation, filter);
+
+        if (result.hit && result.fraction < 1.0f) {
+            groundHits++;
+            if (groundHits >= 2) { // Require at least 2 hits to be considered grounded
+                groundHit = true;
+                break;
+            }
+        }
+    }
+
+    isGrounded = groundHit;
+
+    // Additional check: if player velocity is very low and we're between platforms, 
+    // apply a small upward force to unstick
+    b2Vec2 velocity = b2Body_GetLinearVelocity(player);
+    if (!isGrounded && fabs(velocity.y) < 0.1f && fabs(velocity.x) < 0.1f) {
+        // Check if we might be stuck between platforms
+        bool mightBeStuck = false;
+
+        // Cast rays upward to detect platforms above
+        for (float offset : rayOffsets) {
+            b2Vec2 origin = { playerPos.x + offset, playerPos.y };
+            b2Vec2 translation = { 0.0f, 1.5f }; // Check above
+
+            b2QueryFilter filter = b2DefaultQueryFilter();
+            b2RayResult result = b2World_CastRayClosest(g_world, origin, translation, filter);
+
+            if (result.hit && result.fraction < 1.0f) {
+                mightBeStuck = true;
+                break;
+            }
+        }
+
+        if (mightBeStuck) {
+            // Apply small upward force to unstick
+            b2Body_ApplyForceToCenter(player, { 0.0f, 5.0f }, true);
+        }
+    }
+
+    // Coyote time and jump reset logic
+    if (wasGrounded && !isGrounded) {
+        coyoteTimer = coyoteTime;
+    }
+    else if (isGrounded) {
+        coyoteTimer = 0.0f;
+        jumpsRemaining = maxJumps;
+        hasDoubleJumped = false;
+        isJumping = false;
+    }
+    else {
+        coyoteTimer -= deltaTime;
+    }
+
+    if (jumpBufferTimer > 0) jumpBufferTimer -= deltaTime;
+}
+
+void check_and_resolve_stuck_situation(b2BodyId player) {
+    b2Vec2 playerPos = b2Body_GetPosition(player);
+    b2Vec2 velocity = b2Body_GetLinearVelocity(player);
+
+    // Check if player is stuck (very low velocity for extended period)
+    static float stuckTimer = 0.0f;
+    if (fabs(velocity.x) < 0.1f && fabs(velocity.y) < 0.1f && !isGrounded) {
+        stuckTimer += 1.0f / 60.0f; // Assuming 60 FPS
+    }
+    else {
+        stuckTimer = 0.0f;
+    }
+
+    // If stuck for more than 1 second, apply rescue force
+    if (stuckTimer > 1.0f) {
+        // Apply upward and slight forward force
+        b2Body_ApplyForceToCenter(player, { 10.0f, 15.0f }, true);
+        stuckTimer = 0.0f; // Reset timer
+
+        std::cout << "Emergency unstuck applied!" << std::endl;
+    }
+}
 
 // ---------------- Main ----------------
 int main(int argc, char* argv[]) {
@@ -1962,7 +2018,7 @@ int main(int argc, char* argv[]) {
     // Initialize audio system
     init_audio();
 
-    // Initialize high score system (ADD THIS)
+    // Initialize high score system
     load_high_score();
 
     // Start background music
@@ -1975,6 +2031,10 @@ int main(int argc, char* argv[]) {
     GLFWwindow* win = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Box2D Platformer with Infinite Platforms", nullptr, nullptr);
     if (!win) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(win);
+
+    // Get primary monitor for fullscreen
+    primaryMonitor = glfwGetPrimaryMonitor();
+
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) return -1;
     glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
 
@@ -1988,6 +2048,20 @@ int main(int argc, char* argv[]) {
     glfwSetScrollCallback(win, scroll_callback);
     glfwSetCursorPosCallback(win, [](GLFWwindow* window, double xpos, double ypos) {
         process_mouse_movement(window, xpos, ypos);
+        });
+
+    // Set up window callbacks
+    glfwSetWindowSizeCallback(win, [](GLFWwindow* window, int width, int height) {
+        glViewport(0, 0, width, height);
+        });
+
+    glfwSetWindowMaximizeCallback(win, [](GLFWwindow* window, int maximized) {
+        if (maximized) {
+            std::cout << "Window maximized" << std::endl;
+        }
+        else {
+            std::cout << "Window restored" << std::endl;
+        }
         });
 
     GLuint vs = compile_shader(vertex_shader_src, GL_VERTEX_SHADER);
@@ -2008,7 +2082,7 @@ int main(int argc, char* argv[]) {
         playerTexture = create_procedural_texture(64, 64, glm::vec3(0.9f, 0.3f, 0.25f), glm::vec3(0.7f, 0.2f, 0.2f));
     }
 
-     boxTexture = load_texture("playegr.png");
+    boxTexture = load_texture("playegr.png");
     if (boxTexture == 0) {
         boxTexture = create_procedural_texture(64, 64, glm::vec3(0.2f, 0.5f, 0.8f), glm::vec3(0.1f, 0.3f, 0.6f));
     }
@@ -2078,16 +2152,13 @@ int main(int argc, char* argv[]) {
     playerSD.density = 1.0f;
     playerSD.material.friction = 0.1f;  // Reduced friction
     playerSD.material.restitution = 0.1f;  // Small bounce
-    //playerSD.material.frictionMix = 0.1f;  // Reduced friction mixing
     b2CreatePolygonShape(player, &playerSD, &playerShape);
 
     // Don't create initial box here - it will be spawned automatically
     currentBox = b2_nullBodyId;
     boxSpawned = false;
 
-
     float timeStep = 1.0f / 60.0f;
-    proj = glm::ortho(0.0f, float(WINDOW_WIDTH), 0.0f, float(WINDOW_HEIGHT), -1.0f, 1.0f);
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
 
     glEnable(GL_BLEND);
@@ -2100,8 +2171,13 @@ int main(int argc, char* argv[]) {
         float deltaTime = currentTime - lastTime;
         lastTime = currentTime;
 
+        // Get current window size for dynamic projection
+        int width, height;
+        glfwGetFramebufferSize(win, &width, &height);
+        proj = glm::ortho(0.0f, float(width), 0.0f, float(height), -1.0f, 1.0f);
+
         process_input(win, player, deltaTime);
-        update_ground_detection(player,deltaTime);
+        update_ground_detection(player, deltaTime);
 
         if (gameOver && glfwGetKey(win, GLFW_KEY_ENTER) == GLFW_PRESS) {
             static bool enterKeyHandled = false;
@@ -2118,7 +2194,6 @@ int main(int argc, char* argv[]) {
             enterKeyHandled = false;
         }
 
-
         // toggles pause/resume
         if (currentGameState == STATE_PAUSED) {
             pause_background_music();
@@ -2127,18 +2202,16 @@ int main(int argc, char* argv[]) {
             resume_background_music();
         }
 
-
         // Update camera position
         update_camera(player, deltaTime);
 
         // Create camera view matrix
         glm::mat4 view = glm::mat4(1.0f);
-        view = glm::translate(view, glm::vec3(-cameraPosition.x + WINDOW_WIDTH / 2.0f,
-            -cameraPosition.y + WINDOW_HEIGHT / 2.0f, 0.0f));
+        view = glm::translate(view, glm::vec3(-cameraPosition.x + width / 2.0f,
+            -cameraPosition.y + height / 2.0f, 0.0f));
         view = glm::scale(view, glm::vec3(cameraZoom, cameraZoom, 1.0f));
 
         // Projection matrix (screen space)
-        glm::mat4 proj = glm::ortho(0.0f, float(WINDOW_WIDTH), 0.0f, float(WINDOW_HEIGHT), -1.0f, 1.0f);
         glm::mat4 viewProj = proj * view;
 
         // Apply dimming to all game components when paused
@@ -2156,6 +2229,7 @@ int main(int argc, char* argv[]) {
             update_score_popups(deltaTime);
             update_platforms(player); // Update the infinite platform system
             check_platform_scoring(player);
+
             // Box respawn logic
             if (!boxSpawned && boxRespawnTimer > 0.0f) {
                 boxRespawnTimer -= deltaTime;
@@ -2218,8 +2292,6 @@ int main(int argc, char* argv[]) {
                 wasPlayerNear = false;
             }
 
-            //update_box_animation(boxUD, deltaTime, isPlayerNear);
-
             // Check if player fell below all platforms
             b2Vec2 ppos = b2Body_GetPosition(player);
             if (ppos.y < -10.0f) {
@@ -2243,15 +2315,12 @@ int main(int argc, char* argv[]) {
             if (gameOver) {
                 // Update game over timer
                 gameOverTimer -= deltaTime;
-                //if (gameOverTimer <= 0.0f) {
-                //    // Auto-restart after timer expires
-                //    reset_game(player);
-                //}
             }
             else if (respawnTimer <= 0.0f && !gameOver) {  // Only respawn if game is not over
                 respawn_player(player);
             }
         }
+
         // --- Rendering ---
         glClear(GL_COLOR_BUFFER_BIT);
         glUseProgram(g_prog);
@@ -2332,8 +2401,8 @@ int main(int argc, char* argv[]) {
             // Dark overlay
             render_pause_overlay(proj);
 
-            float centerX = WINDOW_WIDTH / 2.0f;
-            float centerY = WINDOW_HEIGHT / 2.0f;
+            float centerX = width / 2.0f;
+            float centerY = height / 2.0f;
 
             // Game Over text
             render_text("GAME OVER", centerX - 150.0f, centerY + 80.0f, 1.5f,
@@ -2360,18 +2429,16 @@ int main(int argc, char* argv[]) {
                 centerX - 80.0f, centerY - 80.0f, 0.6f,
                 glm::vec3(1, 0.5f, 0.5f), glm::vec3(0.5f, 0.2f, 0.2f), glm::vec2(1, -1));
 
-
             render_text("Press ENTER to restart now", centerX - 120.0f, centerY - 150.0f, 0.5f,
                 glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
         }
 
-
         // Play/Pause button in top-right corner
         if (currentGameState == STATE_PLAYING) {
-            render_button(WINDOW_WIDTH - 60, WINDOW_HEIGHT - 60, 50, 50, pauseButtonTexture, "PAUSE");
+            render_button(width - 60, height - 60, 50, 50, pauseButtonTexture, "PAUSE");
         }
         else {
-            render_button(WINDOW_WIDTH - 60, WINDOW_HEIGHT - 60, 50, 50, playButtonTexture, "PLAY");
+            render_button(width - 60, height - 60, 50, 50, playButtonTexture, "PLAY");
         }
 
         // Pause menu
@@ -2379,8 +2446,8 @@ int main(int argc, char* argv[]) {
             render_pause_overlay(proj);
 
             // Pause menu panel
-            float centerX = WINDOW_WIDTH / 2.0f;
-            float centerY = WINDOW_HEIGHT / 2.0f;
+            float centerX = width / 2.0f;
+            float centerY = height / 2.0f;
             float panelWidth = 350.0f;  // Increased width for high score display
             float panelHeight = 280.0f; // Increased height
 
@@ -2391,23 +2458,6 @@ int main(int argc, char* argv[]) {
             // Pause text
             render_text("GAME PAUSED", centerX - 80, centerY + 80, 0.8f,
                 glm::vec3(1, 1, 1), glm::vec3(0, 0, 0), glm::vec2(2, -2));
-
-            // Current score display
-            //render_text("Current Score: " + std::to_string(currentScore),
-            //    centerX - 120, centerY + 40, 0.5f,
-            //    glm::vec3(1, 1, 1), glm::vec3(0, 0, 0), glm::vec2(1, -1));
-
-            //// High score display with special highlighting if it's new
-            //glm::vec3 highScoreColor = newHighScore ? glm::vec3(1, 1, 0) : glm::vec3(0, 1, 1);
-            //glm::vec3 highScoreShadow = newHighScore ? glm::vec3(0.5f, 0.5f, 0) : glm::vec3(0, 0.5f, 0.5f);
-
-            //std::string highScoreText = "High Score: " + std::to_string(highScore);
-            //if (newHighScore) {
-            //    highScoreText += " - NEW RECORD!";
-            //}
-
-          /*  render_text(highScoreText, centerX - 140, centerY + 10, 0.6f,
-                highScoreColor, highScoreShadow, glm::vec2(1, -1));*/
 
             // Resume button
             render_button(centerX - 100, centerY - 20, 200, 40, resumeButtonTexture, "RESUME");
@@ -2421,55 +2471,37 @@ int main(int argc, char* argv[]) {
         }
 
         // Current score
-        render_text("Score:" + std::to_string(currentScore), 20.0f, WINDOW_HEIGHT - 40.0f, 0.8f,
+        render_text("Score:" + std::to_string(currentScore), 20.0f, height - 40.0f, 0.8f,
             glm::vec3(1, 1, 1), glm::vec3(0.2f, 0.6f, 1.0f), glm::vec2(2, -2));
 
-        // High score (added this)
+        // High score
         std::string hsText = "High: " + std::to_string(highScore);
         glm::vec3 hsColor = newHighScore ? glm::vec3(1, 1, 0) : glm::vec3(0.8f, 0.8f, 1.0f);
-        render_text(hsText, 20.0f, WINDOW_HEIGHT - 70.0f, 0.6f,
+        render_text(hsText, 20.0f, height - 70.0f, 0.6f,
             hsColor, glm::vec3(0.2f, 0.2f, 0.4f), glm::vec2(1, -1));
 
         // Death counter
         std::string deathsText = "Deaths: " + std::to_string(deathCount) + "/" + std::to_string(MAX_DEATHS);
         glm::vec3 deathsColor = (deathCount >= MAX_DEATHS - 1) ? glm::vec3(1, 0.3f, 0.3f) : glm::vec3(0.8f, 0.8f, 0.8f);
-        render_text(deathsText, 20.0f, WINDOW_HEIGHT - 100.0f, 0.5f,
+        render_text(deathsText, 20.0f, height - 100.0f, 0.5f,
             deathsColor, glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
 
-        // Platform count info (moved down)
-        //render_text("Platforms: " + std::to_string(platforms.size()), 20.0f, WINDOW_HEIGHT - 95.0f, 0.5f,
-        //    glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
-
-        //// Camera info
-        //render_text("Zoom: " + std::to_string(cameraZoom).substr(0, 4) + " (+/- to adjust)", 20.0f, WINDOW_HEIGHT - 90.0f, 0.4f,
-        //    glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
+        // Controls help
+        render_text("F11/Alt+Enter:Fullscreen  ESC:Pause  H:Damage  J:Heal  Arrow Keys:Move  Space:Jump",
+            20.0f, 30.0f, 0.4f,
+            glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
 
         // Game state text
         if (currentGameState == STATE_PAUSED && !showPauseMenu) {
-            render_text("PAUSED", WINDOW_WIDTH / 2 - 40, WINDOW_HEIGHT / 2, 1.0f,
+            render_text("PAUSED", width / 2 - 40, height / 2, 1.0f,
                 glm::vec3(1, 1, 0), glm::vec3(0.5f, 0.5f, 0), glm::vec2(2, -2));
         }
 
         if (isPlayerDead && !gameOver) {
             std::string respawnText = "Respawning in " + std::to_string(static_cast<int>(respawnTimer)) + "s";
-            render_text(respawnText, WINDOW_WIDTH / 2 - 150.0f, WINDOW_HEIGHT / 2, 1.0f,
+            render_text(respawnText, width / 2 - 150.0f, height / 2, 1.0f,
                 glm::vec3(1, 0.3f, 0.3f), glm::vec3(0.5f, 0.1f, 0.1f), glm::vec2(2, -2));
-
-            //// Show final score and high score when dead
-            //std::string finalScoreText = "Final Score: " + std::to_string(currentScore);
-            //render_text(finalScoreText, WINDOW_WIDTH / 2 - 100.0f, WINDOW_HEIGHT / 2 - 50.0f, 0.7f,
-            //    glm::vec3(1, 1, 1), glm::vec3(0, 0, 0), glm::vec2(1, -1));
-
-            //if (newHighScore) {
-            //    render_text("NEW HIGH SCORE!", WINDOW_WIDTH / 2 - 120.0f, WINDOW_HEIGHT / 2 - 90.0f, 0.8f,
-            //        glm::vec3(1, 1, 0), glm::vec3(0.5f, 0.5f, 0), glm::vec2(2, -2));
-            //}
         }
-
-        // Controls help
-        render_text("ESC:Pause  H:Damage  J:Heal  X:Explosion  Arrow Keys:Move  Space:Jump",
-            20.0f, 30.0f, 0.4f,
-            glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(0.2f, 0.2f, 0.2f), glm::vec2(1, -1));
 
         glfwSwapBuffers(win);
         glfwPollEvents();
