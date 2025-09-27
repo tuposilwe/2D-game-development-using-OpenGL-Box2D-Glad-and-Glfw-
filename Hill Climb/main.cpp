@@ -670,9 +670,10 @@ void respawn_player(b2BodyId player) {
     playerHealth = maxHealth;
     b2Body_SetGravityScale(player, 1.0f);
 
-    // Find a safe spawn position (on the first platform)
+    // Find a safe spawn position - FIXED: Check if platforms exist
     float spawnX = -10.0f;
-    float spawnY = 2.0f;
+    float spawnY = 5.0f; // Default safe height
+
     if (!platforms.empty()) {
         b2Vec2 platformPos = b2Body_GetPosition(platforms[0]);
         spawnX = platformPos.x;
@@ -685,12 +686,16 @@ void respawn_player(b2BodyId player) {
     // Reset camera to player position
     cameraPosition = glm::vec2(spawnX * PIXELS_PER_METER, spawnY * PIXELS_PER_METER);
 
-    // Respawn effect
-    //spawn_explosion(glm::vec2(spawnX, spawnY));
+    // Reset jump variables
+    jumpsRemaining = maxJumps;
+    hasDoubleJumped = false;
+    isJumping = false;
+    coyoteTimer = 0.0f;
+    jumpBufferTimer = 0.0f;
 
-    // Just stop the respawn timer and keep the player dead
+    // Just stop the respawn timer
     respawnTimer = 0.0f;
-    std::cout << "Player died - no respawn" << std::endl;
+    std::cout << "Player respawned" << std::endl;
 }
 
 
@@ -708,9 +713,11 @@ void reset_game(b2BodyId player) {
     // Reset player position and state
     b2Body_SetGravityScale(player, 1.0f);
 
-    // Find a safe spawn position
+    // Find a safe spawn position - FIXED: Check if platforms vector is empty
     float spawnX = -10.0f;
-    float spawnY = 2.0f;
+    float spawnY = 5.0f; // Default safe height
+
+    // Only use platform position if platforms exist
     if (!platforms.empty()) {
         b2Vec2 platformPos = b2Body_GetPosition(platforms[0]);
         spawnX = platformPos.x;
@@ -726,15 +733,33 @@ void reset_game(b2BodyId player) {
     // Clear existing platforms and generate new ones
     for (auto& platform : platforms) {
         UserData* ud = (UserData*)b2Body_GetUserData(platform);
-        delete ud;
+        if (ud) delete ud;
         b2DestroyBody(platform);
     }
     platforms.clear();
+
+    // Generate new platforms before setting player position
     generate_initial_platforms();
+
+    // Now that platforms are generated, we can reposition the player safely
+    if (!platforms.empty()) {
+        b2Vec2 platformPos = b2Body_GetPosition(platforms[0]);
+        spawnX = platformPos.x;
+        spawnY = platformPos.y + PLATFORM_HEIGHT + 1.0f;
+        b2Body_SetTransform(player, { spawnX, spawnY }, b2MakeRot(0.0f));
+        cameraPosition = glm::vec2(spawnX * PIXELS_PER_METER, spawnY * PIXELS_PER_METER);
+    }
 
     // Clear particles and floating text
     particles.clear();
     floatingTexts.clear();
+
+    // Reset jump variables
+    jumpsRemaining = maxJumps;
+    hasDoubleJumped = false;
+    isJumping = false;
+    coyoteTimer = 0.0f;
+    jumpBufferTimer = 0.0f;
 
     // Restart music
     play_background_music();
