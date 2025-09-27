@@ -30,6 +30,11 @@
 #include <SDL.h>
 #include <SDL_mixer.h>
 
+
+// ---------------- Platform Scoring System ----------------
+int lastPlatformIndex = 0; // Track the highest platform index passed
+float platformPassThreshold = 1.0f; // How far past the platform to count as "passed"
+
 // ---------------- Improved Movement System ----------------
 float moveSpeed = 4.0f;           // Max horizontal speed
 float acceleration = 50.0f;       // How quickly player accelerates
@@ -1729,6 +1734,52 @@ void spawn_high_score_celebration(b2BodyId player) {
     floatingTexts.push_back(ft);
 }
 
+void check_platform_scoring(b2BodyId player) {
+    if (isPlayerDead) return;
+
+    b2Vec2 playerPos = b2Body_GetPosition(player);
+
+    // Check if we've passed any new platforms
+    for (int i = lastPlatformIndex; i < platforms.size(); i++) {
+        b2Vec2 platformPos = b2Body_GetPosition(platforms[i]);
+
+        // If player has passed this platform (player is to the right of platform center + threshold)
+        if (playerPos.x > platformPos.x + platformPassThreshold) {
+            // Only score if this is a new platform we haven't passed yet
+            if (i > lastPlatformIndex) {
+                lastPlatformIndex = i;
+                currentScore += 5; // Add points for passing a platform
+
+                // Visual and audio feedback
+                play_score_sound();
+                spawn_score_popup(5, glm::vec2(platformPos.x, platformPos.y + 1.0f));
+
+                // Check for high score
+                check_high_score();
+
+                std::cout << "Platform passed! Score: " << currentScore << std::endl;
+
+                // Special celebration for every 10 platforms
+                if (lastPlatformIndex % 10 == 0) {
+                    spawn_explosion(glm::vec2(platformPos.x, platformPos.y + 2.0f));
+                    if (lastPlatformIndex % 20 == 0) { // Extra celebration every 20 platforms
+                        heal(10, player); // Heal player as bonus
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle case where player might be going backwards (should be rare)
+    for (int i = lastPlatformIndex; i >= 0; i--) {
+        b2Vec2 platformPos = b2Body_GetPosition(platforms[i]);
+        if (playerPos.x < platformPos.x - platformPassThreshold) {
+            lastPlatformIndex = glm::max(0, i - 1);
+            break;
+        }
+    }
+}
+
 
 // ---------------- Main ----------------
 int main(int argc, char* argv[]) {
@@ -1935,6 +1986,7 @@ int main(int argc, char* argv[]) {
             update_particles(deltaTime);
             update_score_popups(deltaTime);
             update_platforms(player); // Update the infinite platform system
+            check_platform_scoring(player);
 
             // --- 1-meter proximity AABB ---
             AABB playerBox = getAABBWithProximity(player, 1.0f, 1.0f, 1.0f);
