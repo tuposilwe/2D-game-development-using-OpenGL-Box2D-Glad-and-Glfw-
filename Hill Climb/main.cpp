@@ -30,6 +30,44 @@
 #include <SDL.h>
 #include <SDL_mixer.h>
 
+// ---------------- Improved Movement System ----------------
+float moveSpeed = 4.0f;           // Max horizontal speed
+float acceleration = 50.0f;       // How quickly player accelerates
+float deceleration = 40.0f;       // How quickly player stops
+float airControl = 0.6f;          // Reduced control in air (0.0-1.0)
+float maxFallSpeed = -25.0f;      // Terminal velocity
+
+// Improved jump variables
+float jumpPower = 12.0f;          // Initial jump velocity
+float jumpHoldTime = 0.2f;        // How long space can be held for higher jump
+float jumpHoldTimer = 0.0f;
+bool isJumping = false;
+
+int maxJumps = 2;  // 1 normal jump + 1 double jump
+int jumpsRemaining = maxJumps;
+
+
+float doubleJumpPower = 7.0f;
+
+float coyoteTime = 0.15f;
+float coyoteTimer = 0.0f;
+
+float jumpBufferTime = 0.1f;
+float jumpBufferTimer = 0.0f;
+
+bool isGrounded = false;
+bool hasDoubleJumped = false;
+
+// Gravity multipliers
+float fallMultiplier = 2.0f;      // falling fast
+float lowJumpMultiplier = 0.5f;   // early release
+float apexHangMultiplier = 0.8f;  // slightly reduce gravity near apex
+float apexThreshold = 0.3f;       // velocity threshold for apex
+
+// Variable jump + fall tweaks
+float jumpCutMultiplier = 0.5f; // Short hop (reduce upward velocity on release)
+//float fallMultiplier = 1.5f;    // Make falling faster than rising
+
 
 // ---------------- High Score System ----------------
 int highScore = 0;
@@ -476,6 +514,28 @@ void generate_initial_platforms() {
     }
 }
 
+void ensure_safe_platform_gaps() {
+    if (platforms.size() < 2) return;
+
+    // Check distances between recent platforms
+    for (int i = platforms.size() - 1; i > glm::max(0, (int)platforms.size() - 5); i--) {
+        if (i == 0) break;
+
+        b2Vec2 currentPos = b2Body_GetPosition(platforms[i]);
+        b2Vec2 prevPos = b2Body_GetPosition(platforms[i - 1]);
+
+        float horizontalGap = currentPos.x - prevPos.x;
+        float verticalGap = fabs(currentPos.y - prevPos.y);
+
+        // If platforms are too close horizontally and vertically, adjust the current one
+        if (horizontalGap < 2.0f && verticalGap < 1.5f) {
+            b2Vec2 newPos = currentPos;
+            newPos.y += 1.0f; // Move current platform up
+            b2Body_SetTransform(platforms[i], newPos, b2MakeRot(0.0f));
+        }
+    }
+}
+
 void update_platforms(b2BodyId player) {
     if (isPlayerDead) return;
 
@@ -527,6 +587,9 @@ void update_platforms(b2BodyId player) {
             b2Body_SetUserData(newPlatform, platformUD);
 
             platforms.push_back(newPlatform);
+
+            // Ensure safe gaps between platforms
+            ensure_safe_platform_gaps();
         }
     }
 }
@@ -797,7 +860,96 @@ bool aabbOverlap(const AABB& a, const AABB& b) {
     return !(a.maxX<b.minX || a.minX>b.maxX || a.maxY<b.minY || a.minY>b.maxY);
 }
 
+void spawn_double_jump_effect(b2BodyId player) {
+    b2Vec2 pos = b2Body_GetPosition(player);
+
+    // Create a circular burst effect for double jump
+    for (int i = 0; i < 12; i++) {
+        Particle p;
+        p.position = glm::vec2(pos.x, pos.y - 0.5f); // Start at feet
+
+        float angle = (i / 12.0f) * 2.0f * 3.14159f;
+        float speed = 2.0f + static_cast<float>(rand()) / RAND_MAX * 3.0f;
+        p.velocity = glm::vec2(cos(angle) * speed, fabs(sin(angle)) * 2.0f); // Upward bias
+
+        p.life = 0.6f;
+        p.size = 0.1f;
+        p.rotation = static_cast<float>(rand()) / RAND_MAX * 2.0f * 3.14159f;
+        p.rotationSpeed = (static_cast<float>(rand()) / RAND_MAX - 0.5f) * 3.0f;
+
+        particles.push_back(p);
+    }
+}
+
 // ---------------- Input ----------------
+void handle_jump_input(b2BodyId player, GLFWwindow* win, float deltaTime) {
+    b2Vec2 velocity = b2Body_GetLinearVelocity(player);
+
+    // Jump buffer system
+    if (glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS) {
+        jumpBufferTimer = jumpBufferTime;
+    }
+
+    // Variable jump height (hold space for higher jump)
+    if (glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS && isJumping) {
+        if (jumpHoldTimer < jumpHoldTime && velocity.y > 0) {
+            // Apply reduced gravity while holding jump
+            velocity.y -= 5.0f * deltaTime; // Reduced gravity effect
+            b2Body_SetLinearVelocity(player, velocity);
+            jumpHoldTimer += deltaTime;
+        }
+    }
+    else {
+        isJumping = false;
+        jumpHoldTimer = 0.0f;
+    }
+
+    // Try to jump if buffer is active
+    if (jumpBufferTimer > 0) {
+        bool canGroundJump = (isGrounded || coyoteTimer > 0) && jumpsRemaining > 0;
+        bool canDoubleJump = !isGrounded && jumpsRemaining > 0 && !hasDoubleJumped;
+
+        if (canGroundJump) {
+            // Ground jump
+            velocity.y = jumpPower;
+            b2Body_SetLinearVelocity(player, velocity);
+            jumpsRemaining--;
+            jumpBufferTimer = 0;
+            isJumping = true;
+            play_jump_sound();
+        }
+        else if (canDoubleJump) {
+            // Double jump
+            velocity.y = jumpPower * 0.9f; // Slightly weaker double jump
+            b2Body_SetLinearVelocity(player, velocity);
+            jumpsRemaining--;
+            hasDoubleJumped = true;
+            jumpBufferTimer = 0;
+            isJumping = true;
+
+            // Double jump effect
+            spawn_double_jump_effect(player);
+            play_jump_sound();
+        }
+    }
+
+    // Apply fall gravity multiplier for more responsive falling
+    if (velocity.y < 0) {
+        // Falling - apply extra gravity
+        velocity.y -= 15.0f * deltaTime * fallMultiplier;
+    }
+    else if (velocity.y > 0 && !glfwGetKey(win, GLFW_KEY_SPACE)) {
+        // Rising but not holding jump - low jump (variable height)
+        velocity.y -= 15.0f * deltaTime * lowJumpMultiplier;
+    }
+
+    // Clamp fall speed
+    velocity.y = glm::max(velocity.y, maxFallSpeed);
+
+    b2Body_SetLinearVelocity(player, velocity);
+}
+
+
 void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
     // ESC key to toggle pause
     static bool escKeyPressed = false;
@@ -830,19 +982,42 @@ void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
     if (currentGameState != STATE_PLAYING) return;
     if (isPlayerDead) return;
 
-    float moveForce = 20.0f;
-    float jumpImpulse = 6.0f;
-    if (glfwGetKey(win, GLFW_KEY_LEFT) == GLFW_PRESS) b2Body_ApplyForceToCenter(player, { -moveForce,0.0f }, true);
-    if (glfwGetKey(win, GLFW_KEY_RIGHT) == GLFW_PRESS) b2Body_ApplyForceToCenter(player, { moveForce,0.0f }, true);
-    if (glfwGetKey(win, GLFW_KEY_SPACE) == GLFW_PRESS) {
-        b2Vec2 vel = b2Body_GetLinearVelocity(player);
-        if (fabs(vel.y) < 0.01f) {
-            b2Body_ApplyLinearImpulseToCenter(player, { 0.0f,jumpImpulse }, true);
-            play_jump_sound();
-        };
+    // Get current velocity
+    b2Vec2 velocity = b2Body_GetLinearVelocity(player);
+
+    // Horizontal movement with proper acceleration/deceleration
+    float targetVelocityX = 0.0f;
+
+    if (glfwGetKey(win, GLFW_KEY_LEFT) == GLFW_PRESS) {
+        targetVelocityX = -moveSpeed;
     }
+    if (glfwGetKey(win, GLFW_KEY_RIGHT) == GLFW_PRESS) {
+        targetVelocityX = moveSpeed;
+    }
+
+    // Apply acceleration/deceleration
+    float currentControl = isGrounded ? 1.0f : airControl;
+
+    if (targetVelocityX != 0.0f) {
+        // Accelerate toward target velocity
+        velocity.x = glm::mix(velocity.x, targetVelocityX, acceleration * currentControl * deltaTime);
+    }
+    else {
+        // Decelerate to zero
+        velocity.x = glm::mix(velocity.x, 0.0f, deceleration * currentControl * deltaTime);
+    }
+
+    // Clamp horizontal speed
+    velocity.x = glm::clamp(velocity.x, -moveSpeed, moveSpeed);
+
+    // Apply velocity
+    b2Body_SetLinearVelocity(player, velocity);
+
+    // Jump handling
+    handle_jump_input(player, win, deltaTime);
+
+    // Reset player position (for testing)
     if (glfwGetKey(win, GLFW_KEY_R) == GLFW_PRESS) {
-        // Reset player to a safe position
         float spawnX = -10.0f;
         float spawnY = 5.0f;
         if (!platforms.empty()) {
@@ -851,7 +1026,7 @@ void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
             spawnY = platformPos.y + PLATFORM_HEIGHT + 1.0f;
         }
         b2Body_SetTransform(player, { spawnX, spawnY }, b2MakeRot(0.0f));
-        b2Body_SetLinearVelocity(player, { 0.0f,0.0f });
+        b2Body_SetLinearVelocity(player, { 0.0f, 0.0f });
     }
 
     // Particle explosion on X key
@@ -891,10 +1066,10 @@ void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
         jKeyPressed = false;
     }
 
+    // Audio controls
     static bool mKeyPressed = false;
     if (glfwGetKey(win, GLFW_KEY_M) == GLFW_PRESS) {
         if (!mKeyPressed) {
-            // Toggle music
             if (Mix_PlayingMusic()) {
                 Mix_PauseMusic();
             }
@@ -911,15 +1086,112 @@ void process_input(GLFWwindow* win, b2BodyId player, float deltaTime) {
     static bool nKeyPressed = false;
     if (glfwGetKey(win, GLFW_KEY_N) == GLFW_PRESS) {
         if (!nKeyPressed) {
-            // Toggle sound effects
             static bool soundsMuted = false;
             soundsMuted = !soundsMuted;
-            Mix_Volume(-1, soundsMuted ? 0 : 128); // -1 = all channels
+            Mix_Volume(-1, soundsMuted ? 0 : 128);
             nKeyPressed = true;
         }
     }
     else {
         nKeyPressed = false;
+    }
+}
+
+
+
+// Update the ground detection to be more reliable:
+void update_ground_detection(b2BodyId player, float deltaTime) {
+    bool wasGrounded = isGrounded;
+
+    // Use multiple raycasts for better ground detection
+    b2Vec2 playerPos = b2Body_GetPosition(player);
+    bool groundHit = false;
+    int groundHits = 0;
+
+    // Cast 5 rays across the player's bottom for more precise detection
+    float rayOffsets[] = { -0.4f, -0.2f, 0.0f, 0.2f, 0.4f };
+    for (float offset : rayOffsets) {
+        b2Vec2 origin = { playerPos.x + offset, playerPos.y - 0.9f }; // Start from bottom
+        b2Vec2 translation = { 0.0f, -0.3f }; // Shorter, more precise ray
+
+        b2QueryFilter filter = b2DefaultQueryFilter();
+        b2RayResult result = b2World_CastRayClosest(g_world, origin, translation, filter);
+
+        if (result.hit && result.fraction < 1.0f) {
+            groundHits++;
+            if (groundHits >= 2) { // Require at least 2 hits to be considered grounded
+                groundHit = true;
+                break;
+            }
+        }
+    }
+
+    isGrounded = groundHit;
+
+    // Additional check: if player velocity is very low and we're between platforms, 
+    // apply a small upward force to unstick
+    b2Vec2 velocity = b2Body_GetLinearVelocity(player);
+    if (!isGrounded && fabs(velocity.y) < 0.1f && fabs(velocity.x) < 0.1f) {
+        // Check if we might be stuck between platforms
+        bool mightBeStuck = false;
+
+        // Cast rays upward to detect platforms above
+        for (float offset : rayOffsets) {
+            b2Vec2 origin = { playerPos.x + offset, playerPos.y };
+            b2Vec2 translation = { 0.0f, 1.5f }; // Check above
+
+            b2QueryFilter filter = b2DefaultQueryFilter();
+            b2RayResult result = b2World_CastRayClosest(g_world, origin, translation, filter);
+
+            if (result.hit && result.fraction < 1.0f) {
+                mightBeStuck = true;
+                break;
+            }
+        }
+
+        if (mightBeStuck) {
+            // Apply small upward force to unstick
+            b2Body_ApplyForceToCenter(player, { 0.0f, 5.0f }, true);
+        }
+    }
+
+    // Coyote time and jump reset logic
+    if (wasGrounded && !isGrounded) {
+        coyoteTimer = coyoteTime;
+    }
+    else if (isGrounded) {
+        coyoteTimer = 0.0f;
+        jumpsRemaining = maxJumps;
+        hasDoubleJumped = false;
+        isJumping = false;
+    }
+    else {
+        coyoteTimer -= deltaTime;
+    }
+
+    if (jumpBufferTimer > 0) jumpBufferTimer -= deltaTime;
+}
+
+void check_and_resolve_stuck_situation(b2BodyId player) {
+    b2Vec2 playerPos = b2Body_GetPosition(player);
+    b2Vec2 velocity = b2Body_GetLinearVelocity(player);
+
+    // Check if player is stuck (very low velocity for extended period)
+    static float stuckTimer = 0.0f;
+    if (fabs(velocity.x) < 0.1f && fabs(velocity.y) < 0.1f && !isGrounded) {
+        stuckTimer += 1.0f / 60.0f; // Assuming 60 FPS
+    }
+    else {
+        stuckTimer = 0.0f;
+    }
+
+    // If stuck for more than 1 second, apply rescue force
+    if (stuckTimer > 1.0f) {
+        // Apply upward and slight forward force
+        b2Body_ApplyForceToCenter(player, { 10.0f, 15.0f }, true);
+        stuckTimer = 0.0f; // Reset timer
+
+        std::cout << "Emergency unstuck applied!" << std::endl;
     }
 }
 
@@ -1582,7 +1854,11 @@ int main(int argc, char* argv[]) {
     UserData* playerUD = new UserData{ ENTITY_PLAYER,nullptr, playerTexture,true, 0.0f, false, 1.0f };
     b2Body_SetUserData(player, playerUD);
     b2Polygon playerShape = b2MakeBox(1.0f, 1.0f);
-    b2ShapeDef playerSD = b2DefaultShapeDef(); playerSD.density = 1.0f; playerSD.material.friction = 0.3f;
+    b2ShapeDef playerSD = b2DefaultShapeDef();
+    playerSD.density = 1.0f;
+    playerSD.material.friction = 0.1f;  // Reduced friction
+    playerSD.material.restitution = 0.1f;  // Small bounce
+    //playerSD.material.frictionMix = 0.1f;  // Reduced friction mixing
     b2CreatePolygonShape(player, &playerSD, &playerShape);
 
     // Single Box - place on a platform
@@ -1620,6 +1896,8 @@ int main(int argc, char* argv[]) {
         lastTime = currentTime;
 
         process_input(win, player, deltaTime);
+        update_ground_detection(player,deltaTime);
+
 
         // toggles pause/resume
         if (currentGameState == STATE_PAUSED) {
@@ -1649,6 +1927,9 @@ int main(int argc, char* argv[]) {
         // Only update physics and game logic when playing
         if (currentGameState == STATE_PLAYING && !isPlayerDead) {
             b2World_Step(g_world, timeStep, 8);
+
+            // Check for stuck situations
+            check_and_resolve_stuck_situation(player);
 
             // Update game systems
             update_particles(deltaTime);
