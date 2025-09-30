@@ -135,8 +135,7 @@ GLint g_uMVP;
 GLint g_uColor;
 GLint g_uUseTexture;
 GLint g_uTexture;
-// Add uniform location
-GLint g_uBrightness;
+
 
 // Global projection matrix
 glm::mat4 proj;
@@ -462,7 +461,6 @@ void render_button(float x, float y, float width, float height, GLuint texture, 
         glUniform3f(g_uColor, color.r, color.g, color.b); // Use provided color for non-textured buttons
     }
 
-    glUniform1f(g_uBrightness, 1.0f); // Ensure full brightness for UI
 
     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
@@ -845,7 +843,6 @@ out vec4 FragColor;
 uniform vec3 uColor;
 uniform sampler2D uTexture;
 uniform bool uUseTexture;
-uniform float uBrightness;
 in vec2 TexCoord;
 void main() {
     vec4 finalColor;
@@ -856,7 +853,7 @@ void main() {
         // When not using texture, use the uniform color
         finalColor = vec4(uColor, 1.0);
     }
-    FragColor = finalColor * uBrightness;
+    FragColor = finalColor;
 }
 )";
 
@@ -1739,30 +1736,6 @@ void render_score_popups(const glm::mat4& proj) {
     }
 }
 
-void render_pause_overlay(const glm::mat4& proj) {
-    glUseProgram(g_prog);
-    glBindVertexArray(buttonVAO);
-    glUniform1i(g_uUseTexture, false);
-
-    // Semi-transparent dark overlay
-    int width, height;
-    glfwGetFramebufferSize(glfwGetCurrentContext(), &width, &height);
-
-    glm::mat4 overlayModel(1.0f);
-    overlayModel = glm::translate(overlayModel, { width / 2.0f, height / 2.0f, 0.0f });
-    overlayModel = glm::scale(overlayModel, { width, height, 1.0f });
-    glm::mat4 overlayMvp = proj * overlayModel;
-    glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(overlayMvp));
-    glUniform3f(g_uColor, 0.0f, 0.0f, 0.0f);
-    glUniform1f(g_uBrightness, 0.7f);  // 70% brightness (30% darker)
-
-    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-}
-
-void dim_game_components(bool paused) {
-    glUniform1f(g_uBrightness, paused ? 0.8f : 1.0f);  // 80% brightness when paused
-}
-
 // Add these functions
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
     float zoomFactor = 1.0f + (yoffset * ZOOM_SENSITIVITY * 0.5f);
@@ -2098,7 +2071,7 @@ int main(int argc, char* argv[]) {
     g_uColor = glGetUniformLocation(g_prog, "uColor");
     g_uUseTexture = glGetUniformLocation(g_prog, "uUseTexture");
     g_uTexture = glGetUniformLocation(g_prog, "uTexture");
-    g_uBrightness = glGetUniformLocation(g_prog, "uBrightness");
+ 
 
     // Load textures (or create procedural ones if files not available)
     GLuint playerTexture = load_texture("enemy2.png");
@@ -2237,9 +2210,6 @@ int main(int argc, char* argv[]) {
 
         // Projection matrix (screen space)
         glm::mat4 viewProj = proj * view;
-
-        // Apply dimming to all game components when paused
-        dim_game_components(currentGameState == STATE_PAUSED);
 
         // Only update physics and game logic when playing
         if (currentGameState == STATE_PLAYING && !isPlayerDead) {
@@ -2405,8 +2375,7 @@ int main(int argc, char* argv[]) {
             drawBody(currentBox, 0.5f, 0.5f);
         }
 
-        // Reset brightness for UI elements (they should remain bright)
-        glUniform1f(g_uBrightness, 1.0f);
+      
 
         // Render health bar above player (using camera)
         if (!isPlayerDead) {
@@ -2422,8 +2391,6 @@ int main(int argc, char* argv[]) {
         // --- GUI Rendering (screen space) ---
         // Game Over Screen
         if (gameOver) {
-            // Dark overlay
-            render_pause_overlay(proj);
 
             float centerX = width / 2.0f;
             float centerY = height / 2.0f;
@@ -2467,17 +2434,11 @@ int main(int argc, char* argv[]) {
 
         // Pause menu
         if (showPauseMenu) {
-            render_pause_overlay(proj);
+         
 
             // Pause menu panel
             float centerX = width / 2.0f;
             float centerY = height / 2.0f;
-            float panelWidth = 350.0f;  // Increased width for high score display
-            float panelHeight = 280.0f; // Increased height
-
-            // Panel background
-            render_button(centerX - panelWidth / 2, centerY - panelHeight / 2,
-                panelWidth, panelHeight, 0, "", glm::vec3(0.2f, 0.2f, 0.3f));
 
             // Pause text
             render_text("GAME PAUSED", centerX - 80, centerY + 80, 0.8f,
