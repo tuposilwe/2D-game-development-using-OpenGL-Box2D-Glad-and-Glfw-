@@ -1326,42 +1326,53 @@ void process_mouse_input(GLFWwindow* window, double xpos, double ypos, int butto
         int width, height;
         glfwGetFramebufferSize(window, &width, &height);
         float mouseX = xpos;
-        float mouseY = height - ypos;
+        float mouseY = height - ypos; // Flip Y coordinate
 
-        // Pause menu buttons
-        if (showPauseMenu) {
-            float centerX = width / 2.0f;
-            float centerY = height / 2.0f;
-            float buttonWidth = 200.0f;
-            float buttonHeight = 50.0f;
-            float buttonSpacing = 60.0f;
-
-            // Resume button
-            if (is_point_in_rect(mouseX, mouseY, centerX - buttonWidth / 2, centerY, buttonWidth, buttonHeight)) {
-                currentGameState = STATE_PLAYING;
-                showPauseMenu = false;
-            }
-            // Quit button
-            else if (is_point_in_rect(mouseX, mouseY, centerX - buttonWidth / 2, centerY - 50, buttonWidth, buttonHeight)) {
-                glfwSetWindowShouldClose(window, true);
-            }
-
-        }
+        std::cout << "Mouse click at: " << mouseX << ", " << mouseY << std::endl;
 
         // Play/Pause button in HUD (top-right corner)
-        if (is_point_in_rect(mouseX, mouseY, width - 60, height - 60, 50, 50)) {
+        float buttonX = width - 60;
+        float buttonY = height - 60;
+        float buttonWidth = 50;
+        float buttonHeight = 50;
+
+        if (is_point_in_rect(mouseX, mouseY, buttonX, buttonY, buttonWidth, buttonHeight)) {
+            std::cout << "Play/Pause button clicked!" << std::endl;
             if (currentGameState == STATE_PLAYING) {
                 currentGameState = STATE_PAUSED;
                 showPauseMenu = true;
+                std::cout << "Game paused" << std::endl;
             }
-            else {
+            else if (currentGameState == STATE_PAUSED) {
                 currentGameState = STATE_PLAYING;
                 showPauseMenu = false;
+                std::cout << "Game resumed" << std::endl;
+            }
+            return; // Button was clicked, don't check other areas
+        }
+
+        // Pause menu buttons (only check if pause menu is visible)
+        if (showPauseMenu) {
+            float centerX = width / 2.0f;
+            float centerY = height / 2.0f;
+            float menuButtonWidth = 200.0f;
+            float menuButtonHeight = 50.0f;
+
+            // Resume button
+            if (is_point_in_rect(mouseX, mouseY, centerX - menuButtonWidth / 2, centerY, menuButtonWidth, menuButtonHeight)) {
+                currentGameState = STATE_PLAYING;
+                showPauseMenu = false;
+                std::cout << "Resume button clicked" << std::endl;
+            }
+            // Quit button
+            else if (is_point_in_rect(mouseX, mouseY, centerX - menuButtonWidth / 2, centerY - 60, menuButtonWidth, menuButtonHeight)) {
+                std::cout << "Quit button clicked" << std::endl;
+                glfwSetWindowShouldClose(window, true);
             }
         }
     }
 
-    // Middle mouse button handling
+    // Middle mouse button handling for camera
     if (button == GLFW_MOUSE_BUTTON_MIDDLE) {
         if (action == GLFW_PRESS) {
             middleMousePressed = true;
@@ -2456,10 +2467,10 @@ int main(int argc, char* argv[]) {
 
         // Play/Pause button in top-right corner
         if (currentGameState == STATE_PLAYING) {
-            render_button(width - 60, height - 60, 50, 50, pauseButtonTexture, "PAUSE");
+            render_button(width - 120, height - 120, 80, 80, pauseButtonTexture, "");
         }
         else {
-            render_button(width - 60, height - 60, 50, 50, playButtonTexture, "PLAY");
+            render_button(width - 120, height - 120, 80, 80, playButtonTexture, "");
         }
 
         // Pause menu
