@@ -480,6 +480,35 @@ bool is_point_in_rect(float px, float py, float x, float y, float width, float h
     return px >= x && px <= x + width && py >= y && py <= y + height;
 }
 
+void render_text_button(float x, float y, float width, float height, const std::string& text,
+    float scale = 0.5f, bool isHovered = false) {
+    // No background rendering - just text
+
+    // Calculate text position (centered)
+    float textWidth = text.length() * 10.0f * scale; // Approximate text width
+    float textX = x + (width - textWidth) / 2.0f;
+    float textY = y + (height - 20.0f * scale) / 2.0f;
+
+    // Choose color based on hover state
+    glm::vec3 textColor, shadowColor;
+    if (isHovered) {
+        textColor = glm::vec3(1.0f, 1.0f, 0.0f); // Yellow when hovered
+        shadowColor = glm::vec3(0.5f, 0.5f, 0.0f);
+    }
+    else {
+        textColor = glm::vec3(1.0f, 1.0f, 1.0f); // White normally
+        shadowColor = glm::vec3(0.0f, 0.0f, 0.0f);
+    }
+
+    // Render the text
+    render_text(text, textX, textY, scale, textColor, shadowColor, glm::vec2(1, -1));
+}
+
+bool check_button_hover(float mouseX, float mouseY, float x, float y, float width, float height) {
+    return is_point_in_rect(mouseX, mouseY, x, y, width, height);
+}
+
+
 // ---------------- Particle System ----------------
 struct Particle {
     glm::vec2 position;
@@ -1313,9 +1342,10 @@ void process_mouse_input(GLFWwindow* window, double xpos, double ypos, int butto
                 showPauseMenu = false;
             }
             // Quit button
-            else if (is_point_in_rect(mouseX, mouseY, centerX - buttonWidth / 2, centerY - buttonSpacing, buttonWidth, buttonHeight)) {
+            else if (is_point_in_rect(mouseX, mouseY, centerX - buttonWidth / 2, centerY - 50, buttonWidth, buttonHeight)) {
                 glfwSetWindowShouldClose(window, true);
             }
+
         }
 
         // Play/Pause button in HUD (top-right corner)
@@ -2439,16 +2469,29 @@ int main(int argc, char* argv[]) {
             // Pause menu panel
             float centerX = width / 2.0f;
             float centerY = height / 2.0f;
+            // Get mouse position for hover detection
+            double mouseX, mouseY;
+            glfwGetCursorPos(win, &mouseX, &mouseY);
+            int fbWidth, fbHeight;
+            glfwGetFramebufferSize(win, &fbWidth, &fbHeight);
+            float mouseYFlipped = fbHeight - mouseY; // Flip Y coordinate
+
+            float buttonWidth = 200.0f;
+            float buttonHeight = 30.0f; // Smaller height for text-only buttons
+
+            // Check hover states
+            bool resumeHovered = check_button_hover(mouseX, mouseYFlipped, centerX - buttonWidth / 2, centerY, buttonWidth, buttonHeight);
+            bool quitHovered = check_button_hover(mouseX, mouseYFlipped, centerX - buttonWidth / 2, centerY - 50, buttonWidth, buttonHeight);
 
             // Pause text
             render_text("GAME PAUSED", centerX - 80, centerY + 80, 0.8f,
                 glm::vec3(1, 1, 1), glm::vec3(0, 0, 0), glm::vec2(2, -2));
 
-            // Resume button
-            render_button(centerX - 100, centerY - 20, 200, 40, resumeButtonTexture, "RESUME");
+            // Resume button - text only with hover effect
+            render_text_button(centerX - buttonWidth / 2, centerY, buttonWidth, buttonHeight, "RESUME", 0.6f, resumeHovered);
 
-            // Quit button
-            render_button(centerX - 100, centerY - 80, 200, 40, quitButtonTexture, "QUIT");
+            // Quit button - text only with hover effect  
+            render_text_button(centerX - buttonWidth / 2, centerY - 50, buttonWidth, buttonHeight, "QUIT", 0.6f, quitHovered);
 
             // Game info footer
             render_text("Press ESC to resume", centerX - 80, centerY - 130, 0.4f,
