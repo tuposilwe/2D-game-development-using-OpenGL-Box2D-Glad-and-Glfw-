@@ -345,13 +345,13 @@ void render_world_space_health_bar(b2BodyId player, const glm::mat4& viewProj) {
 
 // ---------------- GUI Button System ----------------
 void init_gui_buttons() {
-    // Button VAO (simple quad)
+    // Button VAO with texture coordinates
     float vertices[] = {
-        // positions
-        0.0f, 0.0f,
-        1.0f, 0.0f,
-        1.0f, 1.0f,
-        0.0f, 1.0f
+        // positions   // texture coords
+        0.0f, 0.0f,    0.0f, 0.0f,
+        1.0f, 0.0f,    1.0f, 0.0f,
+        1.0f, 1.0f,    1.0f, 1.0f,
+        0.0f, 1.0f,    0.0f, 1.0f
     };
 
     glGenVertexArrays(1, &buttonVAO);
@@ -361,8 +361,13 @@ void init_gui_buttons() {
     glBindBuffer(GL_ARRAY_BUFFER, buttonVBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
+    // Position attribute
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+
+    // Texture coordinate attribute
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
 
     glBindVertexArray(0);
 }
@@ -394,15 +399,15 @@ GLuint load_texture_alpha(const char* path, bool flip_vertical = true) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
         stbi_image_free(data);
-        std::cout << "Loaded texture: " << path << " (" << width << "x" << height << ", " << nrComponents << " components)" << std::endl;
+        std::cout << "SUCCESS: Loaded texture: " << path << " (" << width << "x" << height << ", " << nrComponents << " components)" << std::endl;
+        return textureID;
     }
     else {
-        std::cout << "Texture failed to load at path: " << path << std::endl;
+        std::cout << "ERROR: Texture failed to load at path: " << path << std::endl;
+        std::cout << "STBI Error: " << stbi_failure_reason() << std::endl;
         stbi_image_free(data);
         return 0;
     }
-
-    return textureID;
 }
 
 // Font rendering
@@ -431,11 +436,14 @@ void render_score_popups(const glm::mat4& proj);
 void render_button(float x, float y, float width, float height, GLuint texture, const std::string& text = "", const glm::vec3& color = glm::vec3(1.0f)) {
     glUseProgram(g_prog);
     glBindVertexArray(buttonVAO);
+
+    // IMPORTANT: Set texture usage and bind texture BEFORE setting uniforms
     glUniform1i(g_uUseTexture, texture != 0);
 
     if (texture != 0) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, texture);
+        glUniform1i(g_uTexture, 0); // This tells the shader to use texture unit 0
     }
 
     glm::mat4 model(1.0f);
@@ -445,7 +453,16 @@ void render_button(float x, float y, float width, float height, GLuint texture, 
     // Use the original projection (not viewProj) for UI elements
     glm::mat4 mvp = proj * model;
     glUniformMatrix4fv(g_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
-    glUniform3f(g_uColor, color.r, color.g, color.b);
+
+    // Use white color when using textures to preserve original texture colors
+    if (texture != 0) {
+        glUniform3f(g_uColor, 1.0f, 1.0f, 1.0f); // White to preserve texture colors
+    }
+    else {
+        glUniform3f(g_uColor, color.r, color.g, color.b); // Use provided color for non-textured buttons
+    }
+
+    glUniform1f(g_uBrightness, 1.0f); // Ensure full brightness for UI
 
     glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
@@ -453,6 +470,11 @@ void render_button(float x, float y, float width, float height, GLuint texture, 
     if (!text.empty()) {
         render_text(text, x + width / 2.0f - text.length() * 5.0f, y + height / 2.0f - 8.0f, 0.4f,
             glm::vec3(1, 1, 1), glm::vec3(0, 0, 0), glm::vec2(1, -1));
+    }
+
+    // Unbind texture to avoid affecting other rendering
+    if (texture != 0) {
+        glBindTexture(GL_TEXTURE_2D, 0);
     }
 }
 
@@ -823,16 +845,18 @@ out vec4 FragColor;
 uniform vec3 uColor;
 uniform sampler2D uTexture;
 uniform bool uUseTexture;
-uniform float uBrightness;  // Add brightness control
+uniform float uBrightness;
 in vec2 TexCoord;
 void main() {
-    vec4 baseColor;
+    vec4 finalColor;
     if (uUseTexture) {
-        baseColor = texture(uTexture, TexCoord) * vec4(uColor, 1.0);
+        // When using texture, ignore uColor and use texture color directly
+        finalColor = texture(uTexture, TexCoord);
     } else {
-        baseColor = vec4(uColor, 1.0);
+        // When not using texture, use the uniform color
+        finalColor = vec4(uColor, 1.0);
     }
-    FragColor = baseColor * uBrightness;  // Apply brightness
+    FragColor = finalColor * uBrightness;
 }
 )";
 
@@ -2093,10 +2117,10 @@ int main(int argc, char* argv[]) {
     }
 
     // Load button textures from PNG files
-    playButtonTexture = load_texture_alpha("play_butto2n.png");
-    pauseButtonTexture = load_texture_alpha("pause_butt2on.png");
-    resumeButtonTexture = load_texture("resume_button.png");
-    quitButtonTexture = load_texture_alpha("quit_button2.png");
+    playButtonTexture = load_texture_alpha("play.png");
+    pauseButtonTexture = load_texture_alpha("pause.png");
+    resumeButtonTexture = load_texture("play.png");
+    quitButtonTexture = load_texture_alpha("quit.png");
 
     // Fallback to procedural textures if PNGs not found
     if (playButtonTexture == 0) {
